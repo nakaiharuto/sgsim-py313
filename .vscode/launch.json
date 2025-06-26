@@ -1,0 +1,80 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            //デフォルト
+            "name": "Run sgsim (Unicast Fast Join)", // ① 設定の名前 (VS Codeで表示)
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sgsim-py313/src/sg_main.py", // ② 実行するスクリプトのパス (通常は変更不要)
+            "console": "integratedTerminal",
+            "args": [ // ③ ここにコマンドライン引数をリスト形式で指定
+                "--fast-join",
+                "--exp", "unicast"
+            ],
+            "cwd": "${workspaceFolder}/sgsim-py313/src/" // ④ プログラムを実行する際の作業ディレクトリ (通常は変更不要)
+        },
+        {
+            //例1: 基本統計とトポロジー図を出力する場合 (--exp basic)
+            "name": "Run sgsim (Basic Topology Lv 3)", 
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sgsim-py313/src/sg_main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--fast-join",
+                "--exp", "basic",
+                "--output-topology-max-level", "3" // レベル3までのトポロジー図を出力
+            ],
+            "cwd": "${workspaceFolder}/sgsim-py313/src/"
+        },
+        {
+            //例1: 基本統計とトポロジー図を出力する場合 (--exp basic)
+            "name": "Run sgsim (Basic Topology Lv 4)", 
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sgsim-py313/src/sg_main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--fast-join",
+                "--exp", "basic",
+                "--output-topology-max-level", "4"
+            ],
+            "cwd": "${workspaceFolder}/sgsim-py313/src/"
+        },
+        {
+          //例2: ノード数を変化させて平均ホップ数を測定する場合 (--exp unicast_vary_n)
+            "name": "Run sgsim (vary node)", 
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sgsim-py313/src/sg_main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--fast-join",
+                "--exp", "unicast_vary_n",
+                "-n", "1000" // 最大ノード数を指定
+                // --unicast-algorithm original もよく一緒に使われます
+            ],
+            "cwd": "${workspaceFolder}/sgsim-py313/src/"
+        },
+        {
+          //例3: ユニキャスト実験で特定のノード数 (-n) とアルゴリズム (--unicast-algorithm) を指定し、ホップグラフも出力する場合
+            "name": "Run sgsim (vary node + algorithm)", 
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sgsim-py313/src/sg_main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--fast-join",
+                "--exp", "unicast",
+                "-n", "50", // 例としてノード数50
+                "--unicast-algorithm", "original", // 例としてOriginalアルゴリズム
+                "--output-hop-graph", // 各ユニキャストのホップグラフを出力
+                "--diagonal", // ホップグラフを斜め線で描画
+                "--interactive" // グラフをファイルに保存せず、ウィンドウに表示
+            ],
+            "cwd": "${workspaceFolder}/sgsim-py313/src/"
+        },
+
+    ]
+}
