@@ -54,7 +54,7 @@ class RequestEvent(Event):
         self.ackId = None
         self.isRequestingNode = True
         # self.onReply = None
-        self.future = asyncio.get_event_loop().create_future()
+        self.future = asyncio.get_running_loop().create_future()#event→runningに変更
         super().__init__(receiver)
 
     async def getReply(self):
@@ -105,7 +105,7 @@ class EventExecutor:
     @classmethod
     def sim(cls, simulation_time: int, verbose=True):
         async def stop():
-            await asyncio.sleep(simulation_time, loop=EventExecutor.loop)
+            await asyncio.sleep(simulation_time) # loop 引数を削除
             raise EventExecutor.FinishException()
 
         print("EventExecutor.sim(): started")

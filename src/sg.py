@@ -240,7 +240,8 @@ class UnicastBase(Event, ABC):
         # the following part is used by a root message only
         self.expected_number_of_results = 1
         self.results: list[SGNode] = []
-        self.future = asyncio.get_event_loop().create_future()
+        loop = asyncio.get_event_loop_policy().get_event_loop()    # ループがまだ走ってなくても取れる
+        self.future = loop.create_future()                        # そのループで Future を作る
         self.destinations: list[SGNode] = []     # targetの近隣Kノードの配列
         self.number_of_messages = 0
         self.path_lengths: list[int] = []

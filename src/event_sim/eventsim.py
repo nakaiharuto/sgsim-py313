@@ -30,19 +30,28 @@ class EventSimulator(asyncio.AbstractEventLoop):
     # _immediate calls there's no need for them to clutter up the heap.
     
     def run_forever(self):
+        import asyncio                           # ← 追加
         self._running = True
-        while (self._immediate or self._scheduled) and self._running:
-            if self._immediate:
-                h = self._immediate[0]
-                self._immediate = self._immediate[1:]
-            else:
-                h = heapq.heappop(self._scheduled)
-                self._time = h._when
-                h._scheduled = False   # just for asyncio.TimerHandle debugging?
-            if not h._cancelled:
-                h._run()
-            if self._exc is not None:
-                raise self._exc
+        asyncio.events._set_running_loop(self)   # ← 追加 ― いま動いているループを登録
+        try:                                     # ← 追加 (try‒finally 化)
+
+            while (self._immediate or self._scheduled) and self._running:
+                if self._immediate:
+                    h = self._immediate[0]
+                    self._immediate = self._immediate[1:]
+                else:
+                    h = heapq.heappop(self._scheduled)
+                    self._time = h._when
+                    # just for asyncio.TimerHandle debugging?
+                    h._scheduled = False
+                if not h._cancelled:
+                    h._run()
+                if self._exc is not None:
+                    raise self._exc
+
+        finally:                                 # ← 追加
+            asyncio.events._set_running_loop(None)  # ループ終了時に登録解除
+
 
     def run_until_complete(self, future):
         raise NotImplementedError
@@ -109,8 +118,8 @@ class EventSimulator(asyncio.AbstractEventLoop):
             except Exception as e:
                 print("Wrapped exception")
                 self._exc = e
-        return asyncio.Task(wrapper(), loop=self)
+        return asyncio.Task(wrapper()) # loop= は不要
 
     def create_future(self):
         # Not sure why this is here rather than in AbstractEventLoop.
-        return asyncio.Future(loop=self)
+       return asyncio.Future() # loop= は不要
