@@ -16,6 +16,9 @@ class SGSimGUI:
         master.title("Skip Graph Simulator GUI")  # Set the window title
         master.geometry("800x700")  # Set the initial window size (width x height)
 
+        # 追加: ウィンドウを画面最大化する
+        master.attributes('-zoomed', True)
+
         # Variables to hold widget values
         self.fast_join_var = tk.BooleanVar(value=True)  # --fast-join
         self.exp_var = tk.StringVar(value="unicast")  # --exp
@@ -35,6 +38,10 @@ class SGSimGUI:
         # Queue to reflect output from the thread to the GUI
         self.output_queue = queue.Queue()
         self.master.after(100, self.process_queue)  # Check the queue every 100ms
+
+        # シミュレーションプロセスを保持する変数 (GUIから停止するために必要)
+        self.simulation_process = None # 追加: 現在実行中のsubprocessプロセスを保持
+
 
     def create_widgets(self):
         # Settings frame
@@ -103,14 +110,40 @@ class SGSimGUI:
         ttk.Checkbutton(settings_frame, text="Verbose Output (--verbose)", variable=self.verbose_var).grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         row_idx += 1
 
-        # Simulation Start Button
-        self.start_button = ttk.Button(self.master, text="Start Simulation", command=self.start_simulation)
-        self.start_button.pack(pady=10)
+        # Simulation Control Frame (シミュレーション制御用の新しいフレーム)
+        control_frame = ttk.Frame(self.master)
+        control_frame.pack(pady=10) # 画面中央に配置
+
+        # Simulation Start Button (左側に配置)
+        self.start_button = ttk.Button(control_frame, text="Start Simulation", command=self.start_simulation)
+        self.start_button.grid(row=0, column=0, padx=5) # control_frame 内のグリッドで左に
+
+        # Simulation Stop Button (右側に配置)
+        self.stop_button = ttk.Button(control_frame, text="Stop Simulation", command=self.stop_simulation, state="disabled")
+        self.stop_button.grid(row=0, column=1, padx=5) # control_frame 内のグリッドで右に
 
         # Results Display Area (Text widget)
-        self.results_text = tk.Text(self.master, wrap="word", height=15)
-        self.results_text.pack(padx=10, pady=5, fill="both", expand=True)
+        #self.results_text = tk.Text(self.master, wrap="word", height=15)
+        #self.results_text.pack(padx=10, pady=5, fill="both", expand=True)
+        #self.results_text.insert(tk.END, "Simulation output will be displayed here...\n")
+        
+        # --- ここから修正: 結果表示エリアにスクロールバーを追加 ---
+        # Textウィジェットとスクロールバーを配置するためのフレーム
+        self.results_frame = ttk.Frame(self.master)
+        self.results_frame.pack(padx=10, pady=5, fill="both", expand=True)
+
+        # 結果表示エリア (Textウィジェット)
+        self.results_text = tk.Text(self.results_frame, wrap="word", height=15) # 親を self.results_frame に変更
+        self.results_text.pack(side="left", fill="both", expand=True) # Textウィジェットを左に配置
         self.results_text.insert(tk.END, "Simulation output will be displayed here...\n")
+
+        # 垂直スクロールバー
+        self.scrollbar = ttk.Scrollbar(self.results_frame, orient="vertical", command=self.results_text.yview)
+        self.scrollbar.pack(side="right", fill="y") # スクロールバーを右に配置
+
+        # Textウィジェットとスクロールバーを連携させる
+        self.results_text.config(yscrollcommand=self.scrollbar.set)
+        # --- 修正ここまで ---
 
         # Update initial widget states
         self.update_widget_states()
@@ -153,6 +186,7 @@ class SGSimGUI:
         self.results_text.delete(1.0, tk.END)  # Clear previous simulation output
         self.results_text.insert(tk.END, "Starting simulation...\n")
         self.start_button.config(state="disabled")  # Disable button to prevent multiple simultaneous launches
+        self.stop_button.config(state="normal") # 追加: 終了ボタンを有効化
 
         # Construct the list of command-line arguments to pass to sg_main.py based on GUI inputs
         args_list = []
@@ -205,54 +239,77 @@ class SGSimGUI:
         simulation_thread.daemon = True  # Set as a daemon thread so it terminates with the main (GUI) thread
         simulation_thread.start()  # Start the thread
 
+    # 追加: シミュレーションを停止するメソッド
+    def stop_simulation(self):
+        if self.simulation_process and self.simulation_process.poll() is None: # プロセスが存在し、まだ実行中であれば
+            # プロセスを強制終了 (SIGTERM を送る)
+            # Linux (WSL) の場合
+            self.simulation_process.terminate()
+            self.results_text.insert(tk.END, "\nStopping simulation...\n") # 停止中メッセージ
+            # 少し待ってから、まだ終了していなければ SIGKILL で強制終了
+            try:
+                self.simulation_process.wait(timeout=5) # 5秒待つ
+            except subprocess.TimeoutExpired:
+                self.simulation_process.kill() # 強制終了
+                self.results_text.insert(tk.END, "\nSimulation force-killed.\n") # 強制終了メッセージ
+            
+        else:
+            self.results_text.insert(tk.END, "\nSimulation is not running.\n") # 実行中でない場合
+        
+        self.stop_button.config(state="disabled") # 終了ボタンを無効化
+        self.start_button.config(state="normal") # 開始ボタンを有効化 (シミュレーション終了を待たずに)
+        self.simulation_process = None # プロセス参照をクリア
+
     def _run_simulation_in_thread(self, command):
         # Method to execute the simulation process in a separate thread and capture its output (stdout/stderr)
         try:
-            # Use subprocess.Popen to execute sg_main.py as a new, independent process
-            # stdout/stderr=subprocess.PIPE captures output via pipes
-            # text=True, bufsize=1, universal_newlines=True configure text mode, unbuffered, and universal newlines
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, universal_newlines=True)
-
-            # Push each line of standard output to the queue in real-time
-            for line in iter(process.stdout.readline, ''):  # Read lines until an empty string is returned
+            # subprocess.Popen を使って新しいプロセスとしてsg_main.pyを実行
+            # プロセスオブジェクトをインスタンス変数に保持
+            self.simulation_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, universal_newlines=True)
+            
+            # 標準出力の各行をリアルタイムで読み込み、キューにプッシュ
+            for line in iter(self.simulation_process.stdout.readline, ''):
                 self.output_queue.put(('stdout', line))
-            # Push each line of standard error to the queue in real-time
-            for line in iter(process.stderr.readline, ''):
+            # 標準エラー出力の各行をリアルタイムでキューにプッシュ
+            for line in iter(self.simulation_process.stderr.readline, ''):
                 self.output_queue.put(('stderr', line))
+            
+            self.simulation_process.stdout.close()
+            self.simulation_process.stderr.close()
+            # process.wait() の代わりに self.simulation_process.wait() を使う
+            self.simulation_process.wait() # プロセスが終了するのを待つ
 
-            process.stdout.close()  # Close standard output pipe
-            process.stderr.close()  # Close standard error pipe
-            process.wait()  # Wait for the process to terminate
-
-            self.output_queue.put(('finished', None))  # Send a finished notification to the queue
+            self.output_queue.put(('finished', None))
 
         except Exception as e:  # If a process-level error occurs during simulation execution
             self.output_queue.put(('error', str(e)))  # Send the error message to the queue
+        finally:
+            self.simulation_process = None # プロセス終了後に変数から参照をクリア
 
     def process_queue(self):
-        # Method run periodically on the GUI's main thread to get output from the queue and display it in the Text widget
+        # ... (既存のコード) ...
         try:
-            while True:  # Loop until the queue is empty
-                tag, line = self.output_queue.get_nowait()  # Get data (tag and line) from the queue non-blockingly
+            while True:
+                tag, line = self.output_queue.get_nowait()
                 if tag == 'stdout':
-                    self.results_text.insert(tk.END, line)  # Insert standard output at the end of the Text widget
+                    self.results_text.insert(tk.END, line)
                 elif tag == 'stderr':
-                    self.results_text.insert(tk.END, f"ERROR: {line}")  # Insert error output and set color to red
+                    self.results_text.insert(tk.END, f"ERROR: {line}")
                     self.results_text.tag_config('error', foreground='red')
                 elif tag == 'finished':
-                    self.results_text.insert(tk.END, "\nSimulation completed.\n")  # Completion message
-                    self.start_button.config(state="normal")  # Re-enable the button to allow re-running
-                    break  # Exit the loop
+                    self.results_text.insert(tk.END, "\nSimulation completed.\n")
+                    self.start_button.config(state="normal")
+                    self.stop_button.config(state="disabled") # 追加
+                    break
                 elif tag == 'error':
-                    self.results_text.insert(tk.END, f"\nAn error occurred during simulation: {line}\n")  # Error message
-                    self.start_button.config(state="normal")  # Re-enable the button
-                    break  # Exit the loop
-        except queue.Empty:  # Exception if the queue is empty when get_nowait() is called
-            pass  # Do nothing
+                    self.results_text.insert(tk.END, f"\nAn error occurred during simulation: {line}\n")
+                    self.start_button.config(state="normal")
+                    self.stop_button.config(state="disabled") # 追加
+                    break
+        except queue.Empty:
+            pass
         finally:
-            # Schedule itself to run again after 100ms to continue checking the queue
             self.master.after(100, self.process_queue)
-
 
 # Tkinter application execution
 if __name__ == "__main__":

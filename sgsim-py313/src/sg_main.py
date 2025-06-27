@@ -344,3 +344,4 @@ def dump_nodes_routing_table(nodes: list[SGNode]) -> None:
 
 if __name__ == "__main__":
     SGMain().main()
+
