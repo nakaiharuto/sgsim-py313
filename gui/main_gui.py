@@ -16,12 +16,6 @@ class SGSimGUI:
         master.title("Skip Graph Simulator GUI")  # Set the window title
         #master.geometry("800x700")  # Set the initial window size (width x height)
         # 追加: ウィンドウを画面最大化する
-        #master.attributes('-zoomed', True)
-
-        # 画面の幅と高さを取得して、ウィンドウのサイズと位置を直接設定する
-        #screen_width = master.winfo_screenwidth()
-        #screen_height = master.winfo_screenheight()
-        # ウィンドウを画面左上隅 (0,0) から、画面いっぱいのサイズで配置する
         master.attributes('-zoomed', True)
 
         # 最大化後もユーザーがリサイズできるようにする（デフォルトではTrueなので、明示的に設定する必要はないが念のため）
