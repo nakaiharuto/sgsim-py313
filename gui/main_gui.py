@@ -14,10 +14,18 @@ class SGSimGUI:
     def __init__(self, master):
         self.master = master  # The Tkinter root window
         master.title("Skip Graph Simulator GUI")  # Set the window title
-        master.geometry("800x700")  # Set the initial window size (width x height)
-
+        #master.geometry("800x700")  # Set the initial window size (width x height)
         # 追加: ウィンドウを画面最大化する
+        #master.attributes('-zoomed', True)
+
+        # 画面の幅と高さを取得して、ウィンドウのサイズと位置を直接設定する
+        #screen_width = master.winfo_screenwidth()
+        #screen_height = master.winfo_screenheight()
+        # ウィンドウを画面左上隅 (0,0) から、画面いっぱいのサイズで配置する
         master.attributes('-zoomed', True)
+
+        # 最大化後もユーザーがリサイズできるようにする（デフォルトではTrueなので、明示的に設定する必要はないが念のため）
+        master.resizable(True, True) # 幅方向も高さ方向もリサイズ可能にする
 
         # Variables to hold widget values
         self.fast_join_var = tk.BooleanVar(value=True)  # --fast-join
@@ -285,31 +293,40 @@ class SGSimGUI:
             self.output_queue.put(('error', str(e)))  # Send the error message to the queue
         finally:
             self.simulation_process = None # プロセス終了後に変数から参照をクリア
-
     def process_queue(self):
-        # ... (既存のコード) ...
-        try:
-            while True:
-                tag, line = self.output_queue.get_nowait()
-                if tag == 'stdout':
-                    self.results_text.insert(tk.END, line)
-                elif tag == 'stderr':
-                    self.results_text.insert(tk.END, f"ERROR: {line}")
-                    self.results_text.tag_config('error', foreground='red')
-                elif tag == 'finished':
-                    self.results_text.insert(tk.END, "\nSimulation completed.\n")
-                    self.start_button.config(state="normal")
-                    self.stop_button.config(state="disabled") # 追加
-                    break
-                elif tag == 'error':
-                    self.results_text.insert(tk.END, f"\nAn error occurred during simulation: {line}\n")
-                    self.start_button.config(state="normal")
-                    self.stop_button.config(state="disabled") # 追加
-                    break
-        except queue.Empty:
-            pass
-        finally:
-            self.master.after(100, self.process_queue)
+            # ... (既存のコード) ...
+            try:
+                while True:
+                    tag, line = self.output_queue.get_nowait()
+                    if tag == 'stdout':
+                        self.results_text.insert(tk.END, line)
+                        # 追加: 自動スクロール
+                        self.results_text.see(tk.END) # 最新の行が見えるようにスクロール
+                    elif tag == 'stderr':
+                        self.results_text.insert(tk.END, f"ERROR: {line}")
+                        self.results_text.tag_config('error', foreground='red')
+                        # 追加: 自動スクロール
+                        self.results_text.see(tk.END) # 最新の行が見えるようにスクロール
+                    elif tag == 'finished':
+                        self.results_text.insert(tk.END, "\nSimulation completed.\n")
+                        self.start_button.config(state="normal")
+                        self.stop_button.config(state="disabled")
+                        # 追加: 自動スクロール（完了メッセージも含む）
+                        self.results_text.see(tk.END)
+                        
+                        # ... (グラフ表示ロジックはそのまま) ...
+                        break
+                    elif tag == 'error':
+                        self.results_text.insert(tk.END, f"\nAn error occurred during simulation: {line}\n")
+                        self.start_button.config(state="normal")
+                        self.stop_button.config(state="disabled")
+                        # 追加: 自動スクロール（エラーメッセージも含む）
+                        self.results_text.see(tk.END)
+                        break
+            except queue.Empty:
+                pass
+            finally:
+                self.master.after(100, self.process_queue)
 
 # Tkinter application execution
 if __name__ == "__main__":
