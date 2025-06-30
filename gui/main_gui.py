@@ -85,18 +85,50 @@ class SGSimGUI(QWidget):
         
         self.init_ui()
 
+    #レイアウト
+    #上にsimulation setting
+    #下にsimulation output display
+    #def init_ui(self):
+    #    # (このメソッドに変更はありません)
+    #    self.setWindowTitle("Skip Graph Simulator GUI")
+    #    self.showMaximized()
+    #    main_layout = QVBoxLayout(self)
+    #    self.create_settings_groupbox()
+    #    self.create_control_buttons()
+    #    self.create_results_display()
+    #    main_layout.addWidget(self.settings_groupbox)
+    #    main_layout.addLayout(self.control_layout)
+    #    main_layout.addWidget(self.results_text)
+    #    self.update_widget_states()
+
+    #レイアウト
+    #左にsimulation setting
+    #右にsimulation output display
     def init_ui(self):
-        # (このメソッドに変更はありません)
         self.setWindowTitle("Skip Graph Simulator GUI")
+        self.resize(1200, 800)
         self.showMaximized()
-        main_layout = QVBoxLayout(self)
+        main_layout = QHBoxLayout(self)  # ← 横並びレイアウト（左：設定＋ボタン、右：出力）
+    
+        # 左側（設定 + ボタン）
+        left_layout = QVBoxLayout()
         self.create_settings_groupbox()
         self.create_control_buttons()
+        left_layout.addWidget(self.settings_groupbox)
+        left_layout.addLayout(self.control_layout)
+        left_layout.addStretch()  # 下に余白を持たせる
+    
+        # 右側（出力表示）
         self.create_results_display()
-        main_layout.addWidget(self.settings_groupbox)
-        main_layout.addLayout(self.control_layout)
-        main_layout.addWidget(self.results_text)
+        self.results_text.setStyleSheet("background-color: #2b2b2b; color: white; font-family: Consolas;")
+    
+        # 左右を main_layout に追加
+        main_layout.addLayout(left_layout, 3.5)
+        main_layout.addWidget(self.results_text, 6.5)
+
+    
         self.update_widget_states()
+
 
     def create_settings_groupbox(self):
         # (このメソッドに変更はありません)
@@ -158,6 +190,8 @@ class SGSimGUI(QWidget):
         self.control_layout.addStretch()
         self.start_button.clicked.connect(self.start_simulation)
         self.stop_button.clicked.connect(self.stop_simulation)
+        
+    
 
     def create_results_display(self):
         # (このメソッドに変更はありません)
