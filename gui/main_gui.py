@@ -1,319 +1,346 @@
-# ~/sgsim_project/gui/main_gui.py
+# ~/sgsim_project/gui/main_gui_pyside6.py
 
-import tkinter as tk
-from tkinter import ttk  # Provides more modern (themed) widgets
-from tkinter import messagebox  # For displaying message boxes
-import subprocess  # To execute external processes (sg_main.py)
-import sys  # To get the path of the current Python interpreter via sys.executable
-import os  # For file path operations
-import threading  # To run the simulation without freezing the GUI
-import queue  # For inter-thread communication
+import sys
+import os
+import subprocess
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QGridLayout, QHBoxLayout,
+    QGroupBox, QCheckBox, QLabel, QComboBox, QLineEdit,
+    QPushButton, QTextEdit
+)
+from PySide6.QtCore import QThread, QObject, Signal, Slot, QMetaObject, Qt
+
+# PySide6.QtGui から QIcon をインポート
+from PySide6.QtGui import QIcon
+# PySide6.QtWidgets から QStyle をインポート
+from PySide6.QtWidgets import QStyle
+
+# --- Worker Class for Running Simulation in a Separate Thread ---
+class SimulationWorker(QObject):
+    """
+    Runs the simulation subprocess in a separate thread to keep the GUI responsive.
+    Emits signals to communicate with the main GUI thread.
+    """
+    output_received = Signal(str)
+    error_received = Signal(str)
+    finished = Signal(int)
+
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
+        self.process = None
+        self._is_running = False
+
+    @Slot()
+    def run(self):
+        """Starts the simulation process."""
+        if self._is_running:
+            return
+        self._is_running = True
+        try:
+            self.process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+            )
+
+            for line in iter(self.process.stdout.readline, ''):
+                self.output_received.emit(line)
+
+            for line in iter(self.process.stderr.readline, ''):
+                self.error_received.emit(line)
+
+            self.process.stdout.close()
+            self.process.stderr.close()
+            self.process.wait()
+
+        except Exception as e:
+            self.error_received.emit(f"Failed to start process: {e}\n")
+        finally:
+            self._is_running = False
+            self.finished.emit(self.process.returncode if self.process else 1)
+
+    @Slot()
+    def stop(self):
+        """
+        Stops the running simulation process. This slot is executed in the worker thread.
+        """
+        if self.process and self.process.poll() is None:
+            self.output_received.emit("\n--- Sending termination signal to simulation ---\n")
+            # プロセスを終了させる。run()メソッド内のループが終了し、
+            # 最終的にfinishedシグナルが発行される。
+            self.process.terminate()
 
 
-class SGSimGUI:
-    def __init__(self, master):
-        self.master = master  # The Tkinter root window
-        master.title("Skip Graph Simulator GUI")  # Set the window title
-        master.geometry("800x700")  # Set the initial window size (width x height)
-
-        # 追加: ウィンドウを画面最大化する
-        master.attributes('-zoomed', True)
-
-        # Variables to hold widget values
-        self.fast_join_var = tk.BooleanVar(value=True)  # --fast-join
-        self.exp_var = tk.StringVar(value="unicast")  # --exp
-        self.n_var = tk.IntVar(value=8)  # -n
-        self.alpha_var = tk.IntVar(value=2)  # --alpha
-        self.unicast_algo_var = tk.StringVar(value="greedy")  # --unicast-algorithm
-        self.seed_var = tk.StringVar(value="")  # --seed (string, treated as None if empty)
-        self.interactive_var = tk.BooleanVar(value=True)  # --interactive
-        self.output_topology_max_level_var = tk.IntVar(value=0)  # --output-topology-max-level
-        self.output_hop_graph_var = tk.BooleanVar(value=False)  # --output-hop-graph
-        self.diagonal_var = tk.BooleanVar(value=False)  # --diagonal
-        self.verbose_var = tk.BooleanVar(value=False)  # -v / --verbose
-
-        # Create and place widgets
-        self.create_widgets()
-
-        # Queue to reflect output from the thread to the GUI
-        self.output_queue = queue.Queue()
-        self.master.after(100, self.process_queue)  # Check the queue every 100ms
-
-        # シミュレーションプロセスを保持する変数 (GUIから停止するために必要)
-        self.simulation_process = None # 追加: 現在実行中のsubprocessプロセスを保持
-
-
-    def create_widgets(self):
-        # Settings frame
-        settings_frame = ttk.LabelFrame(self.master, text="Simulation Settings")
-        settings_frame.pack(padx=10, pady=10, fill="x", expand=False)
-
-        # Prepare layout grid
-        row_idx = 0
-
-        # --fast-join
-        ttk.Checkbutton(settings_frame, text="Fast Join (--fast-join)", variable=self.fast_join_var).grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        row_idx += 1
-
-        # --exp
-        ttk.Label(settings_frame, text="Experiment Type (--exp):").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        exp_options = ["basic", "unicast", "unicast_vary_n"]
-        exp_combobox = ttk.Combobox(settings_frame, textvariable=self.exp_var, values=exp_options, state="readonly")
-        exp_combobox.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
-        exp_combobox.bind("<<ComboboxSelected>>", self.update_widget_states)  # Update widget states when selection changes
-        row_idx += 1
-
-        # -n
-        ttk.Label(settings_frame, text="Number of Nodes (-n):").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(settings_frame, textvariable=self.n_var).grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
-        row_idx += 1
-
-        # --alpha
-        ttk.Label(settings_frame, text="Membership Vector Base (--alpha):").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(settings_frame, textvariable=self.alpha_var).grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
-        row_idx += 1
-
-        # --unicast-algorithm
-        ttk.Label(settings_frame, text="Unicast Algorithm (--unicast-algorithm):").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        unicast_algo_options = ["greedy", "original"]
-        self.unicast_algo_combobox = ttk.Combobox(settings_frame, textvariable=self.unicast_algo_var, values=unicast_algo_options, state="readonly")
-        self.unicast_algo_combobox.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
-        row_idx += 1
-
-        # --seed
-        ttk.Label(settings_frame, text="Random Seed (--seed):").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(settings_frame, textvariable=self.seed_var).grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
-        row_idx += 1
-
-        # --interactive
-        ttk.Checkbutton(settings_frame, text="Display Graphs in Window (--interactive)", variable=self.interactive_var).grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        row_idx += 1
-
-        # --output-topology-max-level
-        ttk.Label(settings_frame, text="Topology Max Level (--output-topology-max-level):").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        self.output_topology_entry = ttk.Entry(settings_frame, textvariable=self.output_topology_max_level_var)
-        self.output_topology_entry.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
-        row_idx += 1
-
-        # --output-hop-graph
-        self.output_hop_graph_check = ttk.Checkbutton(settings_frame, text="Output Hop Graph (--output-hop-graph)", variable=self.output_hop_graph_var)
-        self.output_hop_graph_check.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        self.output_hop_graph_check.bind("<ButtonRelease-1>", self.update_widget_states)  # Update states when checkbox is released
-        row_idx += 1
-
-        # --diagonal
-        self.diagonal_check = ttk.Checkbutton(settings_frame, text="Draw Diagonal Lines on Hop Graph (--diagonal)", variable=self.diagonal_var)
-        self.diagonal_check.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        row_idx += 1
-
-        # -v / --verbose
-        ttk.Checkbutton(settings_frame, text="Verbose Output (--verbose)", variable=self.verbose_var).grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        row_idx += 1
-
-        # Simulation Control Frame (シミュレーション制御用の新しいフレーム)
-        control_frame = ttk.Frame(self.master)
-        control_frame.pack(pady=10) # 画面中央に配置
-
-        # Simulation Start Button (左側に配置)
-        self.start_button = ttk.Button(control_frame, text="Start Simulation", command=self.start_simulation)
-        self.start_button.grid(row=0, column=0, padx=5) # control_frame 内のグリッドで左に
-
-        # Simulation Stop Button (右側に配置)
-        self.stop_button = ttk.Button(control_frame, text="Stop Simulation", command=self.stop_simulation, state="disabled")
-        self.stop_button.grid(row=0, column=1, padx=5) # control_frame 内のグリッドで右に
-
-        # Results Display Area (Text widget)
-        #self.results_text = tk.Text(self.master, wrap="word", height=15)
-        #self.results_text.pack(padx=10, pady=5, fill="both", expand=True)
-        #self.results_text.insert(tk.END, "Simulation output will be displayed here...\n")
+# --- Main GUI Class ---
+class SGSimGUI(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.simulation_thread = None
+        self.simulation_worker = None
         
-        # --- ここから修正: 結果表示エリアにスクロールバーを追加 ---
-        # Textウィジェットとスクロールバーを配置するためのフレーム
-        self.results_frame = ttk.Frame(self.master)
-        self.results_frame.pack(padx=10, pady=5, fill="both", expand=True)
+        self.init_ui()
 
-        # 結果表示エリア (Textウィジェット)
-        self.results_text = tk.Text(self.results_frame, wrap="word", height=15) # 親を self.results_frame に変更
-        self.results_text.pack(side="left", fill="both", expand=True) # Textウィジェットを左に配置
-        self.results_text.insert(tk.END, "Simulation output will be displayed here...\n")
-
-        # 垂直スクロールバー
-        self.scrollbar = ttk.Scrollbar(self.results_frame, orient="vertical", command=self.results_text.yview)
-        self.scrollbar.pack(side="right", fill="y") # スクロールバーを右に配置
-
-        # Textウィジェットとスクロールバーを連携させる
-        self.results_text.config(yscrollcommand=self.scrollbar.set)
-        # --- 修正ここまで ---
-
-        # Update initial widget states
+    def init_ui(self):
+        # (このメソッドに変更はありません)
+        self.setWindowTitle("Skip Graph Simulator GUI")
+        self.showMaximized()
+        main_layout = QVBoxLayout(self)
+        self.create_settings_groupbox()
+        self.create_control_buttons()
+        self.create_results_display()
+        main_layout.addWidget(self.settings_groupbox)
+        main_layout.addLayout(self.control_layout)
+        main_layout.addWidget(self.results_text)
         self.update_widget_states()
 
-    def update_widget_states(self, event=None):
-        # Updates the enabled/disabled state of related widgets based on experiment type and other checkbox states
-        exp_type = self.exp_var.get()
-        output_hop_graph_checked = self.output_hop_graph_var.get()
+    def create_settings_groupbox(self):
+        # (このメソッドに変更はありません)
+        self.settings_groupbox = QGroupBox("Simulation Settings")
+        settings_layout = QGridLayout()
+        self.fast_join_checkbox = QCheckBox("Fast Join (--fast-join)")
+        self.fast_join_checkbox.setChecked(True)
+        self.exp_combo = QComboBox()
+        self.exp_combo.addItems(["basic", "unicast", "unicast_vary_n"])
+        self.exp_combo.setCurrentText("unicast")
+        self.n_edit = QLineEdit("8")
+        self.alpha_edit = QLineEdit("2")
+        self.unicast_algo_combo = QComboBox()
+        self.unicast_algo_combo.addItems(["greedy", "original"])
+        self.seed_edit = QLineEdit()
+        self.seed_edit.setPlaceholderText("Leave empty for random seed")
+        self.interactive_checkbox = QCheckBox("Display Graphs in Window (--interactive)")
+        self.interactive_checkbox.setChecked(True)
+        self.output_topology_max_level_edit = QLineEdit("0")
+        self.output_hop_graph_checkbox = QCheckBox("Output Hop Graph (--output-hop-graph)")
+        self.diagonal_checkbox = QCheckBox("Draw Diagonal Lines on Hop Graph (--diagonal)")
+        self.verbose_checkbox = QCheckBox("Verbose Output (--verbose)")
+        row = 0
+        settings_layout.addWidget(self.fast_join_checkbox, row, 0, 1, 2); row += 1
+        settings_layout.addWidget(QLabel("Experiment Type (--exp):"), row, 0)
+        settings_layout.addWidget(self.exp_combo, row, 1); row += 1
+        settings_layout.addWidget(QLabel("Number of Nodes (-n):"), row, 0)
+        settings_layout.addWidget(self.n_edit, row, 1); row += 1
+        settings_layout.addWidget(QLabel("Membership Vector Base (--alpha):"), row, 0)
+        settings_layout.addWidget(self.alpha_edit, row, 1); row += 1
+        settings_layout.addWidget(QLabel("Unicast Algorithm (--unicast-algorithm):"), row, 0)
+        settings_layout.addWidget(self.unicast_algo_combo, row, 1); row += 1
+        settings_layout.addWidget(QLabel("Random Seed (--seed):"), row, 0)
+        settings_layout.addWidget(self.seed_edit, row, 1); row += 1
+        settings_layout.addWidget(self.interactive_checkbox, row, 0, 1, 2); row += 1
+        settings_layout.addWidget(QLabel("Topology Max Level (--output-topology-max-level):"), row, 0)
+        settings_layout.addWidget(self.output_topology_max_level_edit, row, 1); row += 1
+        settings_layout.addWidget(self.output_hop_graph_checkbox, row, 0, 1, 2); row += 1
+        settings_layout.addWidget(self.diagonal_checkbox, row, 0, 1, 2); row += 1
+        settings_layout.addWidget(self.verbose_checkbox, row, 0, 1, 2)
+        self.settings_groupbox.setLayout(settings_layout)
+        self.exp_combo.currentTextChanged.connect(self.update_widget_states)
+        self.output_hop_graph_checkbox.toggled.connect(self.update_widget_states)
 
-        # Control enable/disable of Unicast Algorithm
-        if exp_type in ["unicast", "unicast_vary_n"]:
-            self.unicast_algo_combobox.config(state="readonly")  # Enable selection
-        else:
-            self.unicast_algo_combobox.config(state="disabled")  # Disable
-            self.unicast_algo_var.set("greedy") # Reset to default if disabled
+    def create_control_buttons(self):
+        # (このメソッドに変更はありません)
+        self.control_layout = QHBoxLayout()
+        self.start_button = QPushButton("Start Simulation")
+        # 標準アイコンを取得
+        start_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        self.start_button.setIcon(start_icon)
+        self.stop_button = QPushButton("Stop Simulation")
+        stop_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        self.stop_button.setIcon(stop_icon)
+        self.stop_button.setEnabled(False)
+        self.control_layout.addStretch()
+        self.control_layout.addWidget(self.start_button)
+        self.control_layout.addWidget(self.stop_button)
+        self.control_layout.addStretch()
+        self.start_button.clicked.connect(self.start_simulation)
+        self.stop_button.clicked.connect(self.stop_simulation)
 
-        # Control enable/disable of Topology Max Level
-        if exp_type == "basic":
-            self.output_topology_entry.config(state="normal")  # Enable
-        else:
-            self.output_topology_entry.config(state="disabled")  # Disable
-            self.output_topology_max_level_var.set(0)  # Reset value to 0 if disabled
+    def create_results_display(self):
+        # (このメソッドに変更はありません)
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)
+        self.results_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.results_text.setPlaceholderText("Simulation output will be displayed here...")
 
-        # Control enable/disable of Hop Graph related options (--output-hop-graph, --diagonal)
-        if exp_type == "unicast":
-            self.output_hop_graph_check.config(state="normal")  # Enable hop graph checkbox
-            if output_hop_graph_checked:  # If hop graph is checked, enable diagonal option as well
-                self.diagonal_check.config(state="normal")
-            else:  # If hop graph is not checked, disable diagonal option and reset its value to False
-                self.diagonal_check.config(state="disabled")
-                self.diagonal_var.set(False)
-        else:  # For experiment types other than "unicast", disable all hop graph related options and reset values to False
-            self.output_hop_graph_check.config(state="disabled")
-            self.output_hop_graph_var.set(False)
-            self.diagonal_check.config(state="disabled")
-            self.diagonal_var.set(False)
+    @Slot()
+    def update_widget_states(self):
+        # (このメソッドに変更はありません)
+        exp_type = self.exp_combo.currentText()
+        output_hop_graph_checked = self.output_hop_graph_checkbox.isChecked()
+        is_unicast_exp = exp_type in ["unicast", "unicast_vary_n"]
+        self.unicast_algo_combo.setEnabled(is_unicast_exp)
+        if not is_unicast_exp: self.unicast_algo_combo.setCurrentText("greedy")
+        is_basic_exp = exp_type == "basic"
+        self.output_topology_max_level_edit.setEnabled(is_basic_exp)
+        if not is_basic_exp: self.output_topology_max_level_edit.setText("0")
+        is_unicast_exp_for_hop = exp_type == "unicast"
+        self.output_hop_graph_checkbox.setEnabled(is_unicast_exp_for_hop)
+        self.diagonal_checkbox.setEnabled(is_unicast_exp_for_hop and output_hop_graph_checked)
+        if not is_unicast_exp_for_hop: self.output_hop_graph_checkbox.setChecked(False)
+        if not (is_unicast_exp_for_hop and output_hop_graph_checked): self.diagonal_checkbox.setChecked(False)
 
+    @Slot()
     def start_simulation(self):
-        # Method executed when the simulation start button is pressed
-        self.results_text.delete(1.0, tk.END)  # Clear previous simulation output
-        self.results_text.insert(tk.END, "Starting simulation...\n")
-        self.start_button.config(state="disabled")  # Disable button to prevent multiple simultaneous launches
-        self.stop_button.config(state="normal") # 追加: 終了ボタンを有効化
+        """Builds the command and starts the simulation in a new thread."""
+        self.results_text.clear()
+        self.results_text.append("Starting simulation...")
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
 
-        # Construct the list of command-line arguments to pass to sg_main.py based on GUI inputs
+        # (引数構築のロジックに変更はありません)
         args_list = []
-        if self.fast_join_var.get():  # If --fast-join checkbox is ON, add it
-            args_list.append("--fast-join")
-
-        args_list.extend(["--exp", self.exp_var.get()])  # Add --exp and its value
-
-        args_list.extend(["-n", str(self.n_var.get())])  # Add -n and its value (convert integer to string)
-        args_list.extend(["--alpha", str(self.alpha_var.get())])  # Add --alpha and its value
-
-        # Add unicast algorithm only if experiment type is "unicast" or "unicast_vary_n"
-        if self.exp_var.get() in ["unicast", "unicast_vary_n"]:
-            args_list.extend(["--unicast-algorithm", self.unicast_algo_var.get()])
-
-        if self.seed_var.get():  # If random seed is entered (not empty), add it
-            args_list.extend(["--seed", self.seed_var.get()])
-
-        if self.interactive_var.get():  # If --interactive checkbox is ON, add it
-            args_list.append("--interactive")
-
-        # Add topology max level only if experiment type is "basic" and level is > 0
-        if self.exp_var.get() == "basic" and self.output_topology_max_level_var.get() > 0:
-            args_list.extend(["--output-topology-max-level", str(self.output_topology_max_level_var.get())])
-
-        # Add hop graph output options only if experiment type is "unicast" and hop graph output is ON
-        if self.exp_var.get() == "unicast" and self.output_hop_graph_var.get():
+        if self.fast_join_checkbox.isChecked(): args_list.append("--fast-join")
+        args_list.extend(["--exp", self.exp_combo.currentText()])
+        args_list.extend(["-n", self.n_edit.text()])
+        args_list.extend(["--alpha", self.alpha_edit.text()])
+        if self.exp_combo.currentText() in ["unicast", "unicast_vary_n"]: args_list.extend(["--unicast-algorithm", self.unicast_algo_combo.currentText()])
+        if self.seed_edit.text(): args_list.extend(["--seed", self.seed_edit.text()])
+        if self.interactive_checkbox.isChecked(): args_list.append("--interactive")
+        if self.exp_combo.currentText() == "basic" and int(self.output_topology_max_level_edit.text()) > 0: args_list.extend(["--output-topology-max-level", self.output_topology_max_level_edit.text()])
+        if self.exp_combo.currentText() == "unicast" and self.output_hop_graph_checkbox.isChecked():
             args_list.append("--output-hop-graph")
-            if self.diagonal_var.get():  # If diagonal drawing is ON, add it
-                args_list.append("--diagonal")
-
-        if self.verbose_var.get():  # If --verbose checkbox is ON, add it
-            args_list.append("--verbose")
-
-        # Construct the path to sg_main.py
-        # This GUI script (main_gui.py) is assumed to be in ~/sgsim_project/gui/
-        # sg_main.py is located at ~/sgsim_project/sgsim/src/sg_main.py, so we use a relative path
-        # os.path.dirname(__file__) gets the directory of the current file (~/sgsim_project/gui/)
-        # Then, it constructs the path "../sgsim/src/sg_main.py"
+            if self.diagonal_checkbox.isChecked(): args_list.append("--diagonal")
+        if self.verbose_checkbox.isChecked(): args_list.append("--verbose")
         script_path = os.path.join(os.path.dirname(__file__), "..", "sgsim-py313", "src", "sg_main.py")
-
-        # Command list to execute sg_main.py using the current Python interpreter (from the virtual environment)
         command = [sys.executable, script_path] + args_list
+        self.results_text.append(f"Execution command: {' '.join(command)}\n")
 
-        self.results_text.insert(tk.END, f"Execution command: {' '.join(command)}\n\n")
+        # --- スレッドとワーカーのセットアップ ---
+        self.simulation_thread = QThread()
+        self.simulation_worker = SimulationWorker(command)
+        self.simulation_worker.moveToThread(self.simulation_thread)
 
-        # Run the simulation in a separate thread to prevent the GUI from freezing
-        # Using `threading.Thread`. `target` specifies the function to run, `args` passes arguments.
-        simulation_thread = threading.Thread(target=self._run_simulation_in_thread, args=(command,))
-        simulation_thread.daemon = True  # Set as a daemon thread so it terminates with the main (GUI) thread
-        simulation_thread.start()  # Start the thread
+        # --- ★★★ 修正点1: シグナル接続の整理 ★★★
+        # 処理の各段階で適切なスロットを呼び出すように接続を整理します。
 
-    # 追加: シミュレーションを停止するメソッド
-    def stop_simulation(self):
-        if self.simulation_process and self.simulation_process.poll() is None: # プロセスが存在し、まだ実行中であれば
-            # プロセスを強制終了 (SIGTERM を送る)
-            # Linux (WSL) の場合
-            self.simulation_process.terminate()
-            self.results_text.insert(tk.END, "\nStopping simulation...\n") # 停止中メッセージ
-            # 少し待ってから、まだ終了していなければ SIGKILL で強制終了
-            try:
-                self.simulation_process.wait(timeout=5) # 5秒待つ
-            except subprocess.TimeoutExpired:
-                self.simulation_process.kill() # 強制終了
-                self.results_text.insert(tk.END, "\nSimulation force-killed.\n") # 強制終了メッセージ
-            
-        else:
-            self.results_text.insert(tk.END, "\nSimulation is not running.\n") # 実行中でない場合
+        # 1. ワーカーからGUIへのデータ通知
+        self.simulation_worker.output_received.connect(self.append_output)
+        self.simulation_worker.error_received.connect(self.append_error)
+        self.simulation_worker.finished.connect(self.on_process_finished)
+
+        # 2. スレッドの開始と、ワーカーのタスク実行を連携
+        self.simulation_thread.started.connect(self.simulation_worker.run)
         
-        self.stop_button.config(state="disabled") # 終了ボタンを無効化
-        self.start_button.config(state="normal") # 開始ボタンを有効化 (シミュレーション終了を待たずに)
-        self.simulation_process = None # プロセス参照をクリア
+        # 3. ワーカー終了後、スレッドを安全に終了させる
+        self.simulation_worker.finished.connect(self.simulation_thread.quit)
 
-    def _run_simulation_in_thread(self, command):
-        # Method to execute the simulation process in a separate thread and capture its output (stdout/stderr)
-        try:
-            # subprocess.Popen を使って新しいプロセスとしてsg_main.pyを実行
-            # プロセスオブジェクトをインスタンス変数に保持
-            self.simulation_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, universal_newlines=True)
+        # 4. オブジェクトのメモリリークを防ぐためのクリーンアップ
+        self.simulation_worker.finished.connect(self.simulation_worker.deleteLater)
+        self.simulation_thread.finished.connect(self.simulation_thread.deleteLater)
+
+        # 5. スレッドが「完全に」終了した後に、GUIの状態を安全に更新
+        self.simulation_thread.finished.connect(self.on_thread_finished)
+        
+        self.simulation_thread.start()
+
+    @Slot()
+    def stop_simulation(self):
+        """
+        ★★★ 修正点2: GUIをブロックせずに安全に停止要求を送る ★★★
+        """
+        if self.simulation_worker and self.simulation_thread and self.simulation_thread.isRunning():
+            # QMetaObjectを使って、stop()スロットの実行をワーカースレッドの
+            # イベントキューに投入します。これによりGUIがフリーズしません。
+            QMetaObject.invokeMethod(self.simulation_worker, "stop", Qt.ConnectionType.QueuedConnection)
+            # Stopボタンは即座に無効化して、連打を防ぎます
+            self.stop_button.setEnabled(False)
+    
+    @Slot()
+    def stop_simulation(self):
+        """
+        ★★★ 修正点: GUIスレッドから直接サブプロセスを停止させる ★★★
+        """
+        # ワーカーと、その内部のプロセスが存在し、かつ実行中であることを確認
+        if (self.simulation_worker and 
+            hasattr(self.simulation_worker, 'process') and 
+            self.simulation_worker.process and 
+            self.simulation_worker.process.poll() is None):
             
-            # 標準出力の各行をリアルタイムで読み込み、キューにプッシュ
-            for line in iter(self.simulation_process.stdout.readline, ''):
-                self.output_queue.put(('stdout', line))
-            # 標準エラー出力の各行をリアルタイムでキューにプッシュ
-            for line in iter(self.simulation_process.stderr.readline, ''):
-                self.output_queue.put(('stderr', line))
+            self.results_text.append("\n--- Sending termination signal to simulation ---\n")
             
-            self.simulation_process.stdout.close()
-            self.simulation_process.stderr.close()
-            # process.wait() の代わりに self.simulation_process.wait() を使う
-            self.simulation_process.wait() # プロセスが終了するのを待つ
+            # GUIスレッドから直接、ワーカーが管理するプロセスを終了させる
+            self.simulation_worker.process.terminate()
+            
+            # Stopボタンは即座に無効化して連打を防ぐ
+            self.stop_button.setEnabled(False)
+        else:
+            # プロセスが既に存在しない場合などのフォールバック処理
+            self.stop_button.setEnabled(False)
+            if not (self.simulation_thread and self.simulation_thread.isRunning()):
+                self.start_button.setEnabled(True)
 
-            self.output_queue.put(('finished', None))
+    # ... (append_output, on_process_finished, on_thread_finished などのメソッドは変更なし) ...
+    
+    def closeEvent(self, event):
+        """
+        ウィンドウを閉じる際に、実行中のシミュレーションがあれば停止させます。
+        (stop_simulationのロジック変更に伴い、こちらも修正)
+        """
+        if self.simulation_thread and self.simulation_thread.isRunning():
+            # 修正されたstop_simulationを呼び出すだけで良い
+            self.stop_simulation()
+            # スレッドが終了するのを少し待つ
+            if self.simulation_thread:
+                self.simulation_thread.wait(1000) 
+        super().closeEvent(event)
 
-        except Exception as e:  # If a process-level error occurs during simulation execution
-            self.output_queue.put(('error', str(e)))  # Send the error message to the queue
-        finally:
-            self.simulation_process = None # プロセス終了後に変数から参照をクリア
+    @Slot(str)
+    def append_output(self, text):
+        self.results_text.setTextColor("white")
+        self.results_text.insertPlainText(text)
+        self.results_text.verticalScrollBar().setValue(self.results_text.verticalScrollBar().maximum())
 
-    def process_queue(self):
-        # ... (既存のコード) ...
-        try:
-            while True:
-                tag, line = self.output_queue.get_nowait()
-                if tag == 'stdout':
-                    self.results_text.insert(tk.END, line)
-                elif tag == 'stderr':
-                    self.results_text.insert(tk.END, f"ERROR: {line}")
-                    self.results_text.tag_config('error', foreground='red')
-                elif tag == 'finished':
-                    self.results_text.insert(tk.END, "\nSimulation completed.\n")
-                    self.start_button.config(state="normal")
-                    self.stop_button.config(state="disabled") # 追加
-                    break
-                elif tag == 'error':
-                    self.results_text.insert(tk.END, f"\nAn error occurred during simulation: {line}\n")
-                    self.start_button.config(state="normal")
-                    self.stop_button.config(state="disabled") # 追加
-                    break
-        except queue.Empty:
-            pass
-        finally:
-            self.master.after(100, self.process_queue)
+    @Slot(str)
+    def append_error(self, text):
+        self.results_text.setTextColor("red")
+        self.results_text.insertPlainText(f"ERROR: {text}")
+        self.results_text.setTextColor("white")
+        self.results_text.verticalScrollBar().setValue(self.results_text.verticalScrollBar().maximum())
 
-# Tkinter application execution
+    @Slot(int)
+    def on_process_finished(self, exit_code):
+        """
+        ★★★ 修正点3: 新しいスロット(ワーカーの処理完了時に呼ばれる) ★★★
+        シミュレーション「プロセス」が完了したときに呼ばれます。
+        ここではメッセージを表示するだけにし、GUIの状態変更は行いません。
+        """
+        self.results_text.append(f"\nSimulation process finished with exit code: {exit_code}.\n")
+
+    @Slot()
+    def on_thread_finished(self):
+        """
+        ★★★ 修正点4: 新しいスロット(スレッドの完全終了時に呼ばれる) ★★★
+        シミュレーション「スレッド」が完全に終了したときに呼ばれます。
+        この時点であれば、GUIの状態を更新したり、オブジェクト参照をクリアしても安全です。
+        """
+        self.results_text.append("Simulation thread has been terminated.\n")
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.simulation_thread = None
+        self.simulation_worker = None
+        
+    def closeEvent(self, event):
+        """ウィンドウを閉じる際に、実行中のシミュレーションがあれば停止させます。"""
+        if self.simulation_thread and self.simulation_thread.isRunning():
+            self.stop_simulation()
+            # スレッドが終了するのを少し待つ
+            self.simulation_thread.wait(1000) 
+        super().closeEvent(event)
+
+
+# qt_material をインポート
+from qt_material import apply_stylesheet
+
 if __name__ == "__main__":
-    # This block ensures the GUI is launched only when the script is executed directly
-    root = tk.Tk()  # Create the Tkinter root window
-    app = SGSimGUI(root)  # Create an instance of the SGSimGUI application
-    root.mainloop()  # Start the Tkinter event loop, making the GUI visible and interactive
+    app = QApplication(sys.argv)
+
+    # スタイルシートを適用（ダークモードの青色テーマ）
+    apply_stylesheet(app, theme='dark_blue.xml')
+
+    window = SGSimGUI()
+    window.show()
+    sys.exit(app.exec())
