@@ -22,6 +22,7 @@ BATCH_CMDS = [
     ("unicast",        "-n 32 --unicast-algorithm greedy"),
     ("unicast",        "-n 32 --unicast-algorithm original"),
     ("unicast",        "-n 32 --unicast-algorithm greedy --output-hop-graph --diagonal"),
+    
     ("unicast_vary_n", ""),
 ]
 
