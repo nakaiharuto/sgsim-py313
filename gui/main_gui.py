@@ -1,5 +1,3 @@
-# ~/sgsim_project/gui/main_gui_pyside6.py
-
 import sys
 import os
 import subprocess
@@ -9,18 +7,11 @@ from PySide6.QtWidgets import (
     QPushButton, QTextEdit
 )
 from PySide6.QtCore import QThread, QObject, Signal, Slot, QMetaObject, Qt
-
-# PySide6.QtGui から QIcon をインポート
 from PySide6.QtGui import QIcon
-# PySide6.QtWidgets から QStyle をインポート
 from PySide6.QtWidgets import QStyle
 
 # --- Worker Class for Running Simulation in a Separate Thread ---
 class SimulationWorker(QObject):
-    """
-    Runs the simulation subprocess in a separate thread to keep the GUI responsive.
-    Emits signals to communicate with the main GUI thread.
-    """
     output_received = Signal(str)
     error_received = Signal(str)
     finished = Signal(int)
@@ -33,7 +24,6 @@ class SimulationWorker(QObject):
 
     @Slot()
     def run(self):
-        """Starts the simulation process."""
         if self._is_running:
             return
         self._is_running = True
@@ -47,17 +37,13 @@ class SimulationWorker(QObject):
                 universal_newlines=True,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             )
-
             for line in iter(self.process.stdout.readline, ''):
                 self.output_received.emit(line)
-
             for line in iter(self.process.stderr.readline, ''):
                 self.error_received.emit(line)
-
             self.process.stdout.close()
             self.process.stderr.close()
             self.process.wait()
-
         except Exception as e:
             self.error_received.emit(f"Failed to start process: {e}\n")
         finally:
@@ -66,15 +52,46 @@ class SimulationWorker(QObject):
 
     @Slot()
     def stop(self):
-        """
-        Stops the running simulation process. This slot is executed in the worker thread.
-        """
         if self.process and self.process.poll() is None:
             self.output_received.emit("\n--- Sending termination signal to simulation ---\n")
-            # プロセスを終了させる。run()メソッド内のループが終了し、
-            # 最終的にfinishedシグナルが発行される。
             self.process.terminate()
 
+# --- Batch Worker for run_all.py ---
+class BatchWorker(QObject):
+    output_received = Signal(str)
+    error_received = Signal(str)
+    finished = Signal(int)
+
+    def __init__(self, command, cwd=None):
+        super().__init__()
+        self.command = command
+        self.cwd = cwd
+        self.process = None
+
+    @Slot()
+    def run(self):
+        try:
+            self.process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=self.cwd,
+                bufsize=1,
+                universal_newlines=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+            )
+            for line in iter(self.process.stdout.readline, ''):
+                self.output_received.emit(line)
+            for line in iter(self.process.stderr.readline, ''):
+                self.error_received.emit(line)
+            self.process.stdout.close()
+            self.process.stderr.close()
+            self.process.wait()
+        except Exception as e:
+            self.error_received.emit(f"Failed to start process: {e}\n")
+        finally:
+            self.finished.emit(self.process.returncode if self.process else 1)
 
 # --- Main GUI Class ---
 class SGSimGUI(QWidget):
@@ -82,56 +99,34 @@ class SGSimGUI(QWidget):
         super().__init__()
         self.simulation_thread = None
         self.simulation_worker = None
-        
+        self.batch_thread = None
+        self.batch_worker = None
         self.init_ui()
 
-    #レイアウト
-    #上にsimulation setting
-    #下にsimulation output display
-    #def init_ui(self):
-    #    # (このメソッドに変更はありません)
-    #    self.setWindowTitle("Skip Graph Simulator GUI")
-    #    self.showMaximized()
-    #    main_layout = QVBoxLayout(self)
-    #    self.create_settings_groupbox()
-    #    self.create_control_buttons()
-    #    self.create_results_display()
-    #    main_layout.addWidget(self.settings_groupbox)
-    #    main_layout.addLayout(self.control_layout)
-    #    main_layout.addWidget(self.results_text)
-    #    self.update_widget_states()
-
-    #レイアウト
-    #左にsimulation setting
-    #右にsimulation output display
+    # 横並びレイアウト（左：設定＋ボタン、右：出力）
     def init_ui(self):
         self.setWindowTitle("Skip Graph Simulator GUI")
         self.resize(1200, 800)
         self.showMaximized()
-        main_layout = QHBoxLayout(self)  # ← 横並びレイアウト（左：設定＋ボタン、右：出力）
-    
-        # 左側（設定 + ボタン）
+        main_layout = QHBoxLayout(self)
+
+        # 左側
         left_layout = QVBoxLayout()
         self.create_settings_groupbox()
         self.create_control_buttons()
         left_layout.addWidget(self.settings_groupbox)
         left_layout.addLayout(self.control_layout)
-        left_layout.addStretch()  # 下に余白を持たせる
-    
-        # 右側（出力表示）
+        left_layout.addStretch()
+
+        # 右側
         self.create_results_display()
         self.results_text.setStyleSheet("background-color: #2b2b2b; color: white; font-family: Consolas;")
-    
-        # 左右を main_layout に追加
+
         main_layout.addLayout(left_layout, 3.5)
         main_layout.addWidget(self.results_text, 6.5)
-
-    
         self.update_widget_states()
 
-
     def create_settings_groupbox(self):
-        # (このメソッドに変更はありません)
         self.settings_groupbox = QGroupBox("Simulation Settings")
         settings_layout = QGridLayout()
         self.fast_join_checkbox = QCheckBox("Fast Join (--fast-join)")
@@ -174,27 +169,32 @@ class SGSimGUI(QWidget):
         self.output_hop_graph_checkbox.toggled.connect(self.update_widget_states)
 
     def create_control_buttons(self):
-        # (このメソッドに変更はありません)
         self.control_layout = QHBoxLayout()
         self.start_button = QPushButton("Start Simulation")
-        # 標準アイコンを取得
         start_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
         self.start_button.setIcon(start_icon)
+
+        # --- Batchボタン追加 ---
+        self.batch_button = QPushButton("Run All (Batch)")
+        batch_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_CommandLink)
+        self.batch_button.setIcon(batch_icon)
+        self.batch_button.setToolTip("run_all.pyで全ケース一括実行")
+        self.batch_button.clicked.connect(self.run_batch)
+
         self.stop_button = QPushButton("Stop Simulation")
         stop_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
         self.stop_button.setIcon(stop_icon)
         self.stop_button.setEnabled(False)
+
         self.control_layout.addStretch()
         self.control_layout.addWidget(self.start_button)
+        self.control_layout.addWidget(self.batch_button)  # 追加
         self.control_layout.addWidget(self.stop_button)
         self.control_layout.addStretch()
         self.start_button.clicked.connect(self.start_simulation)
         self.stop_button.clicked.connect(self.stop_simulation)
-        
-    
 
     def create_results_display(self):
-        # (このメソッドに変更はありません)
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
         self.results_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
@@ -202,7 +202,6 @@ class SGSimGUI(QWidget):
 
     @Slot()
     def update_widget_states(self):
-        # (このメソッドに変更はありません)
         exp_type = self.exp_combo.currentText()
         output_hop_graph_checked = self.output_hop_graph_checkbox.isChecked()
         is_unicast_exp = exp_type in ["unicast", "unicast_vary_n"]
@@ -219,13 +218,12 @@ class SGSimGUI(QWidget):
 
     @Slot()
     def start_simulation(self):
-        """Builds the command and starts the simulation in a new thread."""
         self.results_text.clear()
         self.results_text.append("Starting simulation...")
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.batch_button.setEnabled(False)
 
-        # (引数構築のロジックに変更はありません)
         args_list = []
         if self.fast_join_checkbox.isChecked(): args_list.append("--fast-join")
         args_list.extend(["--exp", self.exp_combo.currentText()])
@@ -239,87 +237,73 @@ class SGSimGUI(QWidget):
             args_list.append("--output-hop-graph")
             if self.diagonal_checkbox.isChecked(): args_list.append("--diagonal")
         if self.verbose_checkbox.isChecked(): args_list.append("--verbose")
-        script_path = os.path.join(os.path.dirname(__file__), "..", "sgsim-py313", "src", "sg_main.py")
+
+        script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "sgsim-py313", "src", "sg_main.py"))
         command = [sys.executable, script_path] + args_list
         self.results_text.append(f"Execution command: {' '.join(command)}\n")
 
-        # --- スレッドとワーカーのセットアップ ---
         self.simulation_thread = QThread()
         self.simulation_worker = SimulationWorker(command)
         self.simulation_worker.moveToThread(self.simulation_thread)
 
-        # --- ★★★ 修正点1: シグナル接続の整理 ★★★
-        # 処理の各段階で適切なスロットを呼び出すように接続を整理します。
-
-        # 1. ワーカーからGUIへのデータ通知
         self.simulation_worker.output_received.connect(self.append_output)
         self.simulation_worker.error_received.connect(self.append_error)
         self.simulation_worker.finished.connect(self.on_process_finished)
-
-        # 2. スレッドの開始と、ワーカーのタスク実行を連携
         self.simulation_thread.started.connect(self.simulation_worker.run)
-        
-        # 3. ワーカー終了後、スレッドを安全に終了させる
         self.simulation_worker.finished.connect(self.simulation_thread.quit)
-
-        # 4. オブジェクトのメモリリークを防ぐためのクリーンアップ
         self.simulation_worker.finished.connect(self.simulation_worker.deleteLater)
         self.simulation_thread.finished.connect(self.simulation_thread.deleteLater)
-
-        # 5. スレッドが「完全に」終了した後に、GUIの状態を安全に更新
         self.simulation_thread.finished.connect(self.on_thread_finished)
-        
         self.simulation_thread.start()
 
     @Slot()
-    def stop_simulation(self):
-        """
-        ★★★ 修正点2: GUIをブロックせずに安全に停止要求を送る ★★★
-        """
-        if self.simulation_worker and self.simulation_thread and self.simulation_thread.isRunning():
-            # QMetaObjectを使って、stop()スロットの実行をワーカースレッドの
-            # イベントキューに投入します。これによりGUIがフリーズしません。
-            QMetaObject.invokeMethod(self.simulation_worker, "stop", Qt.ConnectionType.QueuedConnection)
-            # Stopボタンは即座に無効化して、連打を防ぎます
-            self.stop_button.setEnabled(False)
-    
+    def run_batch(self):
+        self.results_text.clear()
+        self.results_text.append("=== Running run_all.py ===\n")
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        self.batch_button.setEnabled(False)
+
+        # run_all.pyの正しい絶対パス
+        run_all_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "sgsim-py313", "src", "run_all.py"))
+        run_all_dir  = os.path.dirname(run_all_path)
+        command = [sys.executable, run_all_path]
+
+        self.batch_thread = QThread()
+        self.batch_worker = BatchWorker(command, cwd=run_all_dir)
+        self.batch_worker.moveToThread(self.batch_thread)
+        self.batch_worker.output_received.connect(self.append_output)
+        self.batch_worker.error_received.connect(self.append_error)
+        self.batch_worker.finished.connect(self.on_batch_finished)
+        self.batch_thread.started.connect(self.batch_worker.run)
+        self.batch_worker.finished.connect(self.batch_thread.quit)
+        self.batch_worker.finished.connect(self.batch_worker.deleteLater)
+        self.batch_thread.finished.connect(self.batch_thread.deleteLater)
+        self.batch_thread.finished.connect(self.on_batch_thread_finished)
+        self.batch_thread.start()
+
     @Slot()
     def stop_simulation(self):
-        """
-        ★★★ 修正点: GUIスレッドから直接サブプロセスを停止させる ★★★
-        """
-        # ワーカーと、その内部のプロセスが存在し、かつ実行中であることを確認
-        if (self.simulation_worker and 
-            hasattr(self.simulation_worker, 'process') and 
-            self.simulation_worker.process and 
+        if (self.simulation_worker and
+            hasattr(self.simulation_worker, 'process') and
+            self.simulation_worker.process and
             self.simulation_worker.process.poll() is None):
-            
             self.results_text.append("\n--- Sending termination signal to simulation ---\n")
-            
-            # GUIスレッドから直接、ワーカーが管理するプロセスを終了させる
             self.simulation_worker.process.terminate()
-            
-            # Stopボタンは即座に無効化して連打を防ぐ
             self.stop_button.setEnabled(False)
         else:
-            # プロセスが既に存在しない場合などのフォールバック処理
             self.stop_button.setEnabled(False)
             if not (self.simulation_thread and self.simulation_thread.isRunning()):
                 self.start_button.setEnabled(True)
+                self.batch_button.setEnabled(True)
 
-    # ... (append_output, on_process_finished, on_thread_finished などのメソッドは変更なし) ...
-    
     def closeEvent(self, event):
-        """
-        ウィンドウを閉じる際に、実行中のシミュレーションがあれば停止させます。
-        (stop_simulationのロジック変更に伴い、こちらも修正)
-        """
         if self.simulation_thread and self.simulation_thread.isRunning():
-            # 修正されたstop_simulationを呼び出すだけで良い
             self.stop_simulation()
-            # スレッドが終了するのを少し待つ
-            if self.simulation_thread:
-                self.simulation_thread.wait(1000) 
+            self.simulation_thread.wait(1000)
+        if self.batch_thread and self.batch_thread.isRunning():
+            # 強制終了はないけど、thread終了を少し待つ
+            self.batch_thread.wait(1000)
         super().closeEvent(event)
 
     @Slot(str)
@@ -337,44 +321,35 @@ class SGSimGUI(QWidget):
 
     @Slot(int)
     def on_process_finished(self, exit_code):
-        """
-        ★★★ 修正点3: 新しいスロット(ワーカーの処理完了時に呼ばれる) ★★★
-        シミュレーション「プロセス」が完了したときに呼ばれます。
-        ここではメッセージを表示するだけにし、GUIの状態変更は行いません。
-        """
         self.results_text.append(f"\nSimulation process finished with exit code: {exit_code}.\n")
 
     @Slot()
     def on_thread_finished(self):
-        """
-        ★★★ 修正点4: 新しいスロット(スレッドの完全終了時に呼ばれる) ★★★
-        シミュレーション「スレッド」が完全に終了したときに呼ばれます。
-        この時点であれば、GUIの状態を更新したり、オブジェクト参照をクリアしても安全です。
-        """
         self.results_text.append("Simulation thread has been terminated.\n")
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.batch_button.setEnabled(True)
         self.simulation_thread = None
         self.simulation_worker = None
-        
-    def closeEvent(self, event):
-        """ウィンドウを閉じる際に、実行中のシミュレーションがあれば停止させます。"""
-        if self.simulation_thread and self.simulation_thread.isRunning():
-            self.stop_simulation()
-            # スレッドが終了するのを少し待つ
-            self.simulation_thread.wait(1000) 
-        super().closeEvent(event)
 
+    @Slot(int)
+    def on_batch_finished(self, exit_code):
+        self.results_text.append(f"\nrun_all.py finished with exit code: {exit_code}\n")
+
+    @Slot()
+    def on_batch_thread_finished(self):
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.batch_button.setEnabled(True)
+        self.batch_thread = None
+        self.batch_worker = None
 
 # qt_material をインポート
 from qt_material import apply_stylesheet
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
-    # スタイルシートを適用（ダークモードの青色テーマ）
     apply_stylesheet(app, theme='dark_blue.xml')
-
     window = SGSimGUI()
     window.show()
     sys.exit(app.exec())

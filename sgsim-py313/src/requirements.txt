@@ -3,3 +3,5 @@ matplotlib
 numpy
 pandas
 colorama
+PySide6
+qt_material
