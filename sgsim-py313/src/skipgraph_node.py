@@ -1,44 +1,71 @@
 import socket
-import json
+import threading
+import time
 import random
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-HOST = ''
-PORT = 8000
+# ノード情報（自動生成）
+NODE_KEY = random.randint(100, 999)
+NODE_MV = ''.join(str(random.randint(0, 1)) for _ in range(32))
+NEIGHBORS = []
 
-def random_mv(length=32, alpha=2):
-    # 例：2進数なら"011010..."
-    return ''.join(str(random.randint(0, alpha-1)) for _ in range(length))
+# UDPブロードキャストで「誰かいますか？」を送信
+def broadcast_discover():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    msg = f"SGDISCOVER:{NODE_KEY}".encode()
+    while True:
+        sock.sendto(msg, ('<broadcast>', 12000))
+        time.sleep(3)
 
-key = random.randint(0, 1000)
-mv = random_mv(32, 2)
+# UDPで「います！」と返事
+def listen_discover():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(('', 12000))
+    while True:
+        data, addr = sock.recvfrom(1024)
+        if data.startswith(b"SGDISCOVER"):
+            # 自分以外なら返事
+            their_key = int(data.decode().split(":")[1])
+            if their_key != NODE_KEY:
+                reply = f"SGREPLY:{NODE_KEY}:{NODE_MV}".encode()
+                sock.sendto(reply, addr)
 
-def run_server():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind((HOST, PORT))
-        s.listen()
-        print(f"Node server started on {HOST}:{PORT}")
-        while True:
-            conn, addr = s.accept()
-            with conn:
-                print(f"Connected by {addr}")
-                request = conn.recv(1024)
-                node_info = {
-                    "key": key,
-                    "mv": mv,
-                    "neighbors": [],   # とりあえず空リスト
-                    "status": "active"
-                }
-                response_body = json.dumps(node_info)
-                response = (
-                    "HTTP/1.0 200 OK\r\n"
-                    f"Content-Length: {len(response_body)}\r\n"
-                    "Content-Type: application/json\r\n"
-                    "Connection: close\r\n"
-                    "\r\n"
-                    f"{response_body}"
-                )
-                conn.sendall(response.encode())
+# UDPでreplyを受け取ったらneighbor追加
+def listen_reply():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(('', 12001))
+    while True:
+        data, addr = sock.recvfrom(1024)
+        if data.startswith(b"SGREPLY"):
+            parts = data.decode().split(":")
+            neighbor_key = int(parts[1])
+            neighbor_mv = parts[2]
+            neighbor_ip = addr[0]
+            neighbor = {"key": neighbor_key, "mv": neighbor_mv, "ip": neighbor_ip}
+            if neighbor not in NEIGHBORS and neighbor_key != NODE_KEY:
+                NEIGHBORS.append(neighbor)
+                print(f"NEW neighbor discovered: {neighbor}")
+
+# 自分の状態を返す簡易HTTPサーバ
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/":
+            body = json.dumps({"key": NODE_KEY, "mv": NODE_MV, "neighbors": NEIGHBORS})
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+def run_http():
+    httpd = HTTPServer(("", 8000), Handler)
+    httpd.serve_forever()
 
 if __name__ == "__main__":
-    run_server()
+    print(f"My Node Key: {NODE_KEY}")
+    # スレッドでブロードキャスト＆リスナ起動
+    threading.Thread(target=broadcast_discover, daemon=True).start()
+    threading.Thread(target=listen_discover, daemon=True).start()
+    threading.Thread(target=listen_reply, daemon=True).start()
+    run_http()
