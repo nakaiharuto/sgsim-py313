@@ -89,7 +89,7 @@ if __name__ == "__main__":
                         plt.plot([x, nkey], [y, y], "k--", lw=0.7)
         plt.yticks([])
         plt.xlabel("Key")
-        plt.title("SkipGraph可視化 (UDP/HTTP)")
+        plt.title("SkipGraph(UDP/HTTP)")
         plt.legend()
         plt.tight_layout()
         plt.show()
