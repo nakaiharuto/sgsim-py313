@@ -29,7 +29,7 @@ def udp_discovery():
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         msg = json.dumps({"key": NODE_KEY, "mv": NODE_MV}).encode()
         while True:
-            sock.sendto(msg, ('<broadcast>', 12000))
+            sock.sendto(msg, ('10.205.127.255', 12000))  # ここを修正！
             time.sleep(2)
     # 受信側
     def listener():
