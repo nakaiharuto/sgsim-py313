@@ -2,66 +2,95 @@ import socket
 import threading
 import time
 import requests
-import sg
-import matplotlib.pyplot as plt
+import json
+import sys
 
-DISCOVERED_NODES = {}  # {ip: key}
+LEVELS = 4   # ノード側と揃えて（32推奨・デモなら4）
 
-# UDPでノード発見
-def listen_for_nodes(port=9876):
+DISCOVERED_NODES = {}  # {ip: {"key":..., "mv":..., "neighbors":[...]}}
+
+def listen_for_nodes(port=12000):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(('', port))
     while True:
         msg, addr = s.recvfrom(1024)
-        if msg.startswith(b'SGNODE:'):
-            parts = msg.decode().split(":")
-            key = int(parts[1])
-            mv = parts[2]
+        try:
+            info = json.loads(msg.decode())
             ip = addr[0]
-            DISCOVERED_NODES[ip] = {"key": key, "mv": mv}
+            DISCOVERED_NODES[ip] = info
+        except Exception:
+            continue
 
-threading.Thread(target=listen_for_nodes, daemon=True).start()
-
+# ノード情報取得（HTTP GET）
 def fetch_node_info(ip):
     url = f"http://{ip}:8000/"
-    print("GET:", url)
     try:
         resp = requests.get(url, timeout=2)
-        info = resp.json()
-        print("RECV:", info)
-        mv_str = info.get("mv")
-        mv_int = int(mv_str, sg.ALPHA)
-        mv = sg.MembershipVector(mv_int)
-        node = sg.SGNode(info["key"], mv)
-        node.status = info.get("status", "unknown")
-        node.neighbor_keys = info.get("neighbors", [])
-        return node
+        return resp.json()
     except Exception as e:
-        print(f"FAILED to fetch node info from {ip}: {e}")
         return None
 
-while True:
+def print_skipgraph(nodes):
+    print("=== SkipGraph Nodes ===")
+    for n in nodes:
+        print(f"node[{n['key']}] (mv={n['mv']})")
+        for neighbor in n.get('neighbors', []):
+            l = neighbor['level']
+            lefts = neighbor['LEFT']
+            rights = neighbor['RIGHT']
+            print(f"  Level {l}: LEFT={['N'+str(k) for k in lefts]} RIGHT={['N'+str(k) for k in rights]}")
+        uniq = set()
+        for neighbor in n.get('neighbors', []):
+            uniq.update(neighbor['LEFT'])
+            uniq.update(neighbor['RIGHT'])
+        uniq.discard(None)
+        print(f"  # of unique nodes: {len([u for u in uniq if u is not None])}")
+    print()
+
+if __name__ == "__main__":
+    print("Searching for SkipGraph nodes on UDP:12000 ...")
+    threading.Thread(target=listen_for_nodes, daemon=True).start()
+    time.sleep(3)   # ノードを探索する猶予（適宜調整）
+
     ips = list(DISCOVERED_NODES.keys())
-    print("現在見つけたノード: ", ips)
+    if not ips:
+        print("ノードが見つかりませんでした。")
+        sys.exit(1)
+    print("Found nodes: ", ips)
+
+    # 各ノードにHTTPで問い合わせ
     nodes = []
     for ip in ips:
-        node = fetch_node_info(ip)
-        if node:
-            nodes.append(node)
+        info = fetch_node_info(ip)
+        if info:
+            nodes.append(info)
+        else:
+            print(f"FAILED to fetch node info from {ip}:8000")
 
-    if nodes:
-        plt.figure(figsize=(8, 2))
-        for i, node in enumerate(nodes):
-            plt.plot(node.key, 1, "o", label=f"N{node.key}")
-            for nkey in getattr(node, "neighbor_keys", []):
-                plt.plot([node.key, nkey], [1, 1], "k--", lw=0.7)
+    if not nodes:
+        print("どのノードからも情報が取れませんでした。")
+        sys.exit(1)
+
+    print_skipgraph(nodes)
+
+    # （Optional）matplotlibでサークルプロットもOK
+    try:
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(7, 2))
+        y = 1
+        for node in nodes:
+            x = node['key']
+            plt.plot(x, y, "o", label=f"N{x}")
+            for neighbor in node.get('neighbors', []):
+                for l in ['LEFT', 'RIGHT']:
+                    for nkey in neighbor[l]:
+                        plt.plot([x, nkey], [y, y], "k--", lw=0.7)
         plt.yticks([])
         plt.xlabel("Key")
-        plt.title("Skip Graph (node visualization)")
+        plt.title("SkipGraph可視化 (UDP/HTTP自動)")
         plt.legend()
         plt.tight_layout()
         plt.show()
-    else:
-        print("ノード情報が取得できませんでした。")
-    time.sleep(10)
+    except ImportError:
+        print("matplotlib未インストールのためグラフ化はスキップ")
