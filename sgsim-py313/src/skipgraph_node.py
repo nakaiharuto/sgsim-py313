@@ -1,3 +1,4 @@
+#ノード立ち上げコード
 import socket
 import threading
 import time
