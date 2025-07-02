@@ -1,3 +1,4 @@
+#実ノード可視化コード
 import socket
 import threading
 import time
