@@ -8,6 +8,7 @@ NODE_IPS = [
     # 必要なら他ノードのIP:PORTも追加
 ]
 
+
 def fetch_node_info(node_addr):
     url = f"http://{node_addr}/"
     print("GET:", url)
