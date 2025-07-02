@@ -3,7 +3,7 @@ import websockets
 import json
 import random
 import math
- 
+
 def create_cylindrical_graph_data():
     """
     ノードを円筒・階層型に配置し、一本の連続した経路を持つデータを生成する関数。
