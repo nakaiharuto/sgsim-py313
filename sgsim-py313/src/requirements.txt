@@ -5,3 +5,4 @@ pandas
 colorama
 PySide6
 qt_material
+requests
