@@ -130,3 +130,18 @@ dmypy.json
 
 *.png
 *.csv
+
+# Python virtual environment
+venv_wsl/
+__pycache__/
+*.pyc
+*.env 
+# .envファイルも無視することが多い
+
+# Unity generated files
+Library/
+Temp/
+obj/
+Build/
+UnityPackageManager/
+# Assets/ などにある個別の大きなバイナリファイルはLFSで管理しているので、ここに書く必要はありません。

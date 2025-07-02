@@ -1,0 +1,85 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\NodeAnimation.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Assets\\Scripts\\NodeAnimation.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\AnimateLineRenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Assets\\Scripts\\AnimateLineRenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\UnitMainThreadDispatcher.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Assets\\Scripts\\UnitMainThreadDispatcher.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\GraphManager.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Assets\\Scripts\\GraphManager.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 0,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "NodeAnimation.cs",
+              "DocumentMoniker": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\NodeAnimation.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\NodeAnimation.cs",
+              "ToolTip": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\NodeAnimation.cs",
+              "RelativeToolTip": "Assets\\Scripts\\NodeAnimation.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAYAAAAcAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-01T06:10:10.564Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "AnimateLineRenderer.cs",
+              "DocumentMoniker": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\AnimateLineRenderer.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\AnimateLineRenderer.cs",
+              "ToolTip": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\AnimateLineRenderer.cs",
+              "RelativeToolTip": "Assets\\Scripts\\AnimateLineRenderer.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABIAAAAdAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-01T05:52:00.665Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "UnitMainThreadDispatcher.cs",
+              "DocumentMoniker": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\UnitMainThreadDispatcher.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\UnitMainThreadDispatcher.cs",
+              "ToolTip": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\UnitMainThreadDispatcher.cs",
+              "RelativeToolTip": "Assets\\Scripts\\UnitMainThreadDispatcher.cs",
+              "ViewState": "AgIAAA8AAAAAAAAAAAAAAC4AAAAFAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-01T04:30:14.054Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "GraphManager.cs",
+              "DocumentMoniker": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\GraphManager.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\GraphManager.cs",
+              "ToolTip": "C:\\Users\\takuya\\sgsim_project\\skipGraph3D\\sgsim3D\\Assets\\Scripts\\GraphManager.cs",
+              "RelativeToolTip": "Assets\\Scripts\\GraphManager.cs",
+              "ViewState": "AgIAAA8AAAAAAAAAAAAAACMAAAAuAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-01T01:51:18.16Z"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
