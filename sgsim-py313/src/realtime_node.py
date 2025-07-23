@@ -37,3 +37,35 @@ class RealNode:
         if not nb or not nb["RIGHT"]:
             return None
         return nb["RIGHT"][0]
+
+# ---- 既存 ----
+class MVCompat:
+    def __init__(self, bitstr: str):
+        self.bitstr = bitstr
+    def common_prefix_length(self, other):
+        o = str(other)
+        c = 0
+        for a, b in zip(self.bitstr, o):
+            if a == b: c += 1
+            else: break
+        return c
+    def __str__(self): return self.bitstr
+
+class RealNode:
+    def __init__(self, key: int, mv: str, neighbors: list[dict]):
+        self.key = key
+        self.mv  = MVCompat(mv)
+        self._nb = {nb["level"]: nb for nb in neighbors}
+    def left(self, level: int):
+        nb = self._nb.get(level);  return nb["LEFT"][0] if nb and nb["LEFT"] else None
+    def right(self, level: int):
+        nb = self._nb.get(level);  return nb["RIGHT"][0] if nb and nb["RIGHT"] else None
+
+# ---- 追加：render_hop_graph用“偽メッセージ” ----
+class FakeMsg:
+    def __init__(self, receiver: RealNode, render_level: int, hop: int, target_key: int):
+        self.receiver = receiver
+        self.render_level = render_level
+        self.hop = hop
+        self.target = target_key
+        self.children: list["FakeMsg"] = []
