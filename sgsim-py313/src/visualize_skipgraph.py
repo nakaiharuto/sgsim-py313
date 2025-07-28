@@ -1,13 +1,16 @@
+# viz_skipgraph_ipcolor.py
 import socket, threading, time, requests, json
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
 import sg_draw
 import sg                          # sg_draw が参照するので import 必須
-from realtime_node import RealNode  # ← 作ったやつ
+from realtime_node import RealNode  # ← 既存のクラス
 
 LEVELS = 4
-# ★ IPだけでなく (IP, PORT) をキーにする
-DISCOVERED_NODES = {}   # type: dict[tuple[str, int], dict]
 
+# (ip, port) -> last info
+DISCOVERED_NODES = {}
 
 # ---- 経路計算ヘルパ ----
 def greedy_route(nmap, src, dst):
@@ -38,14 +41,13 @@ def greedy_route(nmap, src, dst):
         cur = best
     return path
 
-
 def find_level_between(nmap, a, b):
     for nb in nmap.get(a, {}).get("neighbors", []):
         if b in nb["LEFT"] or b in nb["RIGHT"]:
             return nb["level"]
     return 0
 
-
+# ---- UDP 受信 ----
 def listen_for_nodes(port=12000):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -54,31 +56,27 @@ def listen_for_nodes(port=12000):
         msg, addr = s.recvfrom(1024)
         try:
             info = json.loads(msg.decode())
-            node_port = info.get("port", 8000)   # ★ 送られてきたポートを使う
-            DISCOVERED_NODES[(addr[0], node_port)] = info   # ★ (IP,PORT) で保存
+            p = info.get("port", 8000)
+            DISCOVERED_NODES[(addr[0], p)] = info
         except Exception:
             pass
 
-
-# ★ (ip, port) タプルを受け取る
-def fetch_node_info(ip_port):
-    ip, port = ip_port
+# ---- HTTP 取得 ----
+def fetch_node_info(ip, port):
     try:
         r = requests.get(f"http://{ip}:{port}/", timeout=1.5)
-        data = r.json()
-        # 可視化では使わないがデバッグ用に仕込んでおく
-        data["_ip"] = ip
-        data["_port"] = port
-        return data
+        return r.json()
     except Exception:
         return None
 
-
+# ---- 描画 ----
 def plot_skipgraph(ax, nodes_json):
     ax.clear()
     if not nodes_json:
         ax.text(0.5, 0.5, "no nodes yet", transform=ax.transAxes,
                 ha="center", va="center")
+        ax.figure.canvas.draw_idle()
+        plt.pause(0.1)
         return
 
     # JSON -> RealNode
@@ -94,9 +92,6 @@ def plot_skipgraph(ax, nodes_json):
         src_key = min(nmap)
         dst_key = max(nmap)
         route = greedy_route(nmap, src_key, dst_key)
-        print("keys:", sorted(nmap))
-        print("route:", route)
-
         if len(route) >= 2:
             for a, b in zip(route, route[1:]):
                 lvl = find_level_between(nmap, a, b)
@@ -112,14 +107,41 @@ def plot_skipgraph(ax, nodes_json):
                             color='orange', lw=2, zorder=5)
             ax.text(0, max(y for (_, y) in pos.values()),
                     f"{src_key}->{dst_key}", color="magenta")
-    # ---------------------------------
+
+    # --------- IP 色分けリング ---------
+    ips = sorted({n["_ip"] for n in nodes_json})
+    cmap = plt.get_cmap("tab20")
+    ip_color = {ip: cmap(i % 20) for i, ip in enumerate(ips)}
+
+    for n in nodes_json:
+        key = n["key"]
+        col = ip_color[n["_ip"]]
+        # 最初に見つかった level の座標を使う
+        nid = None
+        for nb in n["neighbors"]:
+            nid_cand = f"{key}@{nb['level']}"
+            if nid_cand in pos:
+                nid = nid_cand
+                break
+        if nid is None:
+            # レベル情報が空でも保険
+            nid = next((k for k in pos if k.startswith(f"{key}@")), None)
+        if nid is None:
+            continue
+        x, y = pos[nid]
+        ax.scatter([x], [y], s=470, facecolors='none',
+                   edgecolors=col, linewidths=4, zorder=6)
+
+    # 凡例
+    handles = [mpatches.Patch(color=ip_color[ip], label=ip) for ip in ips]
+    ax.legend(handles=handles, loc="upper right")
 
     ax.figure.canvas.draw_idle()
     plt.pause(0.1)
 
-
+# ---- main ----
 if __name__ == "__main__":
-    print("動的探索モードでSkipGraphノードを可視化します")
+    print("動的探索モードでSkipGraphノードを可視化します（IPごと色分け）")
     threading.Thread(target=listen_for_nodes, daemon=True).start()
 
     plt.ion()
@@ -128,22 +150,12 @@ if __name__ == "__main__":
     try:
         while True:
             nodes = []
-            # ★ (ip, port) ごとに取ってくる
-            for ip_port in list(DISCOVERED_NODES.keys()):
-                info = fetch_node_info(ip_port)
+            for (ip, port), _ in list(DISCOVERED_NODES.items()):
+                info = fetch_node_info(ip, port)
                 if info:
+                    info["_ip"] = ip
+                    info["_port"] = port
                     nodes.append(info)
-
-            # ★ key が重複していたら後勝ちなので、一応ユニーク化（不要なら消してOK）
-            uniq = []
-            seen = set()
-            for n in nodes:
-                if n["key"] in seen:
-                    continue
-                seen.add(n["key"])
-                uniq.append(n)
-            nodes = uniq
-
             plot_skipgraph(ax, nodes)
             time.sleep(1.0)
     except KeyboardInterrupt:

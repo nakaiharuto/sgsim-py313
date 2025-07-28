@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict, Tuple
 
 # ========== default config ==========
-LEVELS   = 4
+LEVELS   = 10
 ALPHA    = 2
 MV_LEN   = 32
 
@@ -260,7 +260,7 @@ def main(num_nodes: int = 10, base_port: int = 8000):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-n", "--num", type=int, default=10, help="number of nodes")
+    parser.add_argument("-n", "--num", type=int, default=10000, help="number of nodes")
     parser.add_argument("--base-port", type=int, default=8000)
     parser.add_argument("--bcast", default=BCAST_IP, help="broadcast address")
     parser.add_argument("--dump", type=int, default=DUMP_INTERVAL_SEC, help="dump interval sec (0=off)")
