@@ -2,41 +2,28 @@
 """
 Multi SkipGraph Node launcher (Windows friendly)
 ------------------------------------------------
-1プロセスで複数ノード(HTTP+UDP広告)を立ち上げる。
-UDPブロードキャストが自分に返ってこない／フィルタされる環境でも動くよう、
-ローカルフォールバック(Queue経由で直接 on_discover に流す)を搭載。
+* 1プロセスで複数ノード(HTTP+UDP広告)を立ち上げる。
+* /shutdown で任意ノードを個別停止可
+* HTTP の / で key・mv・port・neighbors を JSON 返す（← port を追加）
 """
 
 from __future__ import annotations
-import socket
-import threading
-import time
-import random
-import json
-import queue
-import argparse
+import socket, threading, time, random, json, queue, argparse
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict, Tuple
 
-# ========== default config ==========
-LEVELS   = 10
-ALPHA    = 2
-MV_LEN   = 32
-
-UDP_PORT = 12000
-BCAST_IP = "255.255.255.255"   # 実ネットワークに合わせて上書き可能
-BCAST_INTERVAL_SEC = 2
-DUMP_INTERVAL_SEC  = 5
-# ====================================
+# ---------- default config ----------
+LEVELS, ALPHA, MV_LEN = 10, 2, 32
+UDP_PORT, BCAST_IP    = 12000, "255.255.255.255"
+BCAST_INTERVAL_SEC, DUMP_INTERVAL_SEC = 2, 5
+# ------------------------------------
 
 ALL_NODES: Dict[Tuple[str, int], Dict[str, int | str]] = {}
-LOCAL_PORTS: set[int] = set()
 _LOCK = threading.Lock()
-STOP = threading.Event()
+STOP  = threading.Event()
+_LOCAL_BUS: "queue.Queue[tuple[str,int,dict]]" = queue.Queue()
 _MY_IP: str | None = None
-
-LOCAL_BUS: "queue.Queue[tuple[str,int,dict]]" = queue.Queue()
 
 FLAGS = {
     "enable_udp": True,
@@ -46,11 +33,10 @@ FLAGS = {
     "dump_interval": DUMP_INTERVAL_SEC,
 }
 
-
+# ---------- util ----------
 def log(msg: str):
     if not FLAGS["quiet"]:
         print(msg)
-
 
 def get_my_ip() -> str:
     global _MY_IP
@@ -66,17 +52,13 @@ def get_my_ip() -> str:
         s.close()
     return _MY_IP
 
-
-def random_mv(length: int = MV_LEN, alpha: int = ALPHA) -> str:
+def random_mv(length=MV_LEN, alpha=ALPHA):
     return "".join(str(random.randint(0, alpha - 1)) for _ in range(length))
 
-
-def common_prefix(a: str, b: str) -> int:
+def common_prefix(a: str, b: str):
     return sum(x == y for x, y in zip(a, b))
 
-
 def on_discover(ip: str, port: int, info: dict):
-    """UDP/フォールバック共通の発見処理"""
     if FLAGS["ignore_loopback"] and ip.startswith("127."):
         return
     with _LOCK:
@@ -85,7 +67,7 @@ def on_discover(ip: str, port: int, info: dict):
     if first:
         log(f"[discovered] {ip}:{port} -> {info}")
 
-
+# ---------- SkipNode ----------
 @dataclass
 class SkipNode:
     key: int
@@ -93,127 +75,118 @@ class SkipNode:
     port: int
     _httpd: HTTPServer = field(init=False, repr=False)
 
+    # ---- neighbor calc ----
     def calc_neighbors(self):
         me = {"key": self.key, "mv": self.mv}
         with _LOCK:
-            all_nodes = list(ALL_NODES.values()) + [me]
-        neighbors = []
-        for level in range(LEVELS):
-            same = [n for n in all_nodes if common_prefix(self.mv, n["mv"]) >= level + 1 and n["key"] != self.key]
+            nodes = list(ALL_NODES.values()) + [me]
+
+        nbs = []
+        for lvl in range(LEVELS):
+            same = [n for n in nodes if common_prefix(self.mv, n["mv"]) >= lvl + 1 and n["key"] != self.key]
             left  = max([n for n in same if n["key"] < self.key], default=None, key=lambda n: n["key"])
             right = min([n for n in same if n["key"] > self.key], default=None, key=lambda n: n["key"])
-            neighbors.append({
-                "level": level,
-                "LEFT":  [left["key"]]  if left  else [],
+            nbs.append({
+                "level": lvl,
+                "LEFT" : [left["key"]]  if left  else [],
                 "RIGHT": [right["key"]] if right else []
             })
-        return neighbors
+        return nbs
 
+    # ---- HTTP handler ----
     def _make_handler(self):
         node = self
-        class Handler(BaseHTTPRequestHandler):
+        class H(BaseHTTPRequestHandler):
             def do_GET(self):
                 if self.path == "/":
                     body = json.dumps({
-                        "key": node.key,
-                        "mv": node.mv,
+                        "key"      : node.key,
+                        "mv"       : node.mv,
+                        "port"     : node.port,           # ★ 追加
                         "neighbors": node.calc_neighbors(),
-                        "hop": 0
+                        "hop"      : 0
                     }).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
                     self.wfile.write(body)
+
             def do_POST(self):
                 if self.path == "/shutdown":
-                    self.send_response(200)
-                    self.end_headers()
+                    self.send_response(200); self.end_headers()
                     self.wfile.write(b"BYE")
-                    # サーバースレッドをシャットダウン
                     threading.Thread(target=node._httpd.shutdown, daemon=True).start()
-            def log_message(self, *args, **kwargs):
+
+            def log_message(self, *args, **kw):  # silence default logging
                 return
-        return Handler
+        return H
 
-
+    # ---- start services ----
     def start_http(self):
         self._httpd = HTTPServer(("", self.port), self._make_handler())
-        threading.Thread(target=self._httpd.serve_forever,
-                         daemon=True,
+        threading.Thread(target=self._httpd.serve_forever, daemon=True,
                          name=f"HTTP-{self.port}").start()
         log(f"[HTTP] {get_my_ip()}:{self.port} (key={self.key})")
 
     def start_broadcast(self):
         if not FLAGS["enable_udp"] and not FLAGS["enable_fallback"]:
             return
-        def broadcaster():
+        def loop():
             info = {"key": self.key, "mv": self.mv, "port": self.port}
             msg  = json.dumps(info).encode()
-            targets = []
             if FLAGS["enable_udp"]:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                targets.append((BCAST_IP, UDP_PORT))
-                # 念のため自分宛にも
-                targets.append((get_my_ip(), UDP_PORT))
-                targets.append(("127.0.0.1", UDP_PORT))
-            else:
-                sock = None  # type: ignore
+                targets = [(BCAST_IP, UDP_PORT),
+                           (get_my_ip(), UDP_PORT),
+                           ("127.0.0.1", UDP_PORT)]
             while not STOP.is_set():
                 if FLAGS["enable_udp"]:
                     for t in targets:
-                        try:
-                            sock.sendto(msg, t)
-                        except Exception:
-                            pass
+                        try: sock.sendto(msg, t)
+                        except Exception: pass
                 if FLAGS["enable_fallback"]:
-                    LOCAL_BUS.put((get_my_ip(), self.port, info))
+                    _LOCAL_BUS.put((get_my_ip(), self.port, info))
                 time.sleep(BCAST_INTERVAL_SEC)
-        threading.Thread(target=broadcaster, daemon=True, name=f"BCAST-{self.port}").start()
+        threading.Thread(target=loop, daemon=True,
+                         name=f"BCAST-{self.port}").start()
 
-
+# ---------- background listeners ----------
 def start_udp_listener():
     if not FLAGS["enable_udp"]:
         return
-    def listener():
+    def loop():
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("", UDP_PORT))
-            log(f"[UDP] listening on 0.0.0.0:{UDP_PORT}")
+            log(f"[UDP] listen 0.0.0.0:{UDP_PORT}")
         except OSError as e:
-            log(f"[UDP] bind failed: {e}  -> UDP受信は諦め")
+            log(f"[UDP] bind failed: {e}")
             return
         while not STOP.is_set():
             try:
                 sock.settimeout(1.0)
                 data, addr = sock.recvfrom(1024)
+                info = json.loads(data.decode())
+                on_discover(addr[0], info.get("port", 8000), info)
             except socket.timeout:
                 continue
             except Exception:
                 continue
-            try:
-                info = json.loads(data.decode())
-                ip   = addr[0]
-                port = info.get("port", 8000)
-                on_discover(ip, port, info)
-            except Exception:
-                pass
-    threading.Thread(target=listener, daemon=True, name="UDP-Listener").start()
+    threading.Thread(target=loop, daemon=True, name="UDP-Listener").start()
 
-
-def start_local_bus_consumer():
+def start_local_consumer():
     if not FLAGS["enable_fallback"]:
         return
-    def consumer():
+    def loop():
         while not STOP.is_set():
             try:
-                ip, port, info = LOCAL_BUS.get(timeout=1.0)
+                ip, port, info = _LOCAL_BUS.get(timeout=1.0)
+                on_discover(ip, port, info)
             except queue.Empty:
                 continue
-            on_discover(ip, port, info)
-    threading.Thread(target=consumer, daemon=True, name="LOCALBUS").start()
-
+    threading.Thread(target=loop, daemon=True, name="LOCALBUS").start()
 
 def periodic_dump():
     if FLAGS["dump_interval"] <= 0:
@@ -221,52 +194,34 @@ def periodic_dump():
     while not STOP.is_set():
         time.sleep(FLAGS["dump_interval"])
         with _LOCK:
-            dump = {f"{ip}:{p}": v for (ip, p), v in ALL_NODES.items()}
-        log(f"[DUMP] ALL_NODES({len(dump)}): {dump}")
+            d = {f"{ip}:{p}": v for (ip, p), v in ALL_NODES.items()}
+        log(f"[DUMP] ALL_NODES({len(d)}): {d}")
 
-
-def main(num_nodes: int = 10, base_port: int = 8000):
-    my_ip = get_my_ip()
-    log(f"Start {num_nodes} nodes on {my_ip}")
-    log(f"BCAST_IP={BCAST_IP}, UDP_PORT={UDP_PORT}")
-
+# ---------- main ----------
+def main(num=10, base_port=8000):
+    log(f"Start {num} nodes on {get_my_ip()}")
     start_udp_listener()
-    start_local_bus_consumer()
-    threading.Thread(target=periodic_dump, daemon=True, name="DUMPER").start()
+    start_local_consumer()
+    threading.Thread(target=periodic_dump, daemon=True).start()
 
-    for i in range(num_nodes):
+    for i in range(num):
         port = base_port + i
-        LOCAL_PORTS.add(port)
         n = SkipNode(key=random.randint(100, 999), mv=random_mv(), port=port)
-        n.start_http()
-        n.start_broadcast()
+        n.start_http(); n.start_broadcast()
 
     try:
-        while True:
-            time.sleep(1)
+        while True: time.sleep(1)
     except KeyboardInterrupt:
-        STOP.set()
-        log("bye")
-
+        STOP.set(); log("bye")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-n", "--num", type=int, default=10, help="number of nodes")
-    parser.add_argument("--base-port", type=int, default=8000)
-    parser.add_argument("--bcast", default=BCAST_IP, help="broadcast address")
-    parser.add_argument("--dump", type=int, default=DUMP_INTERVAL_SEC, help="dump interval sec (0=off)")
-    parser.add_argument("--no-fallback", action="store_true")
-    parser.add_argument("--no-udp", action="store_true")
-    parser.add_argument("--ignore-loopback", action="store_true")
-    parser.add_argument("--quiet", action="store_true")
-
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-n","--num", type=int, default=10)
+    ap.add_argument("--base-port", type=int, default=8000)
+    ap.add_argument("--bcast", default=BCAST_IP)
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args()
 
     BCAST_IP = args.bcast
-    FLAGS["enable_udp"]      = not args.no_udp
-    FLAGS["enable_fallback"] = not args.no_fallback
-    FLAGS["ignore_loopback"] = args.ignore_loopback
-    FLAGS["quiet"]           = args.quiet
-    FLAGS["dump_interval"]   = args.dump
-
-    main(num_nodes=args.num, base_port=args.base_port)
+    FLAGS["quiet"] = args.quiet
+    main(args.num, args.base_port)
