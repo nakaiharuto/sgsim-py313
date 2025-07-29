@@ -2,24 +2,9 @@
 """
 Multi SkipGraph Node launcher (Windows friendly)
 ------------------------------------------------
-* 1プロセスで複数ノード(HTTP+UDP広告)を立ち上げる。
-* UDPブロードキャストが自分に返ってこない／フィルタされる環境でも動くよう、
-  ローカルフォールバック(Queue経由で直接 on_discover に流す)を搭載。
-* 可視化コードは変更しない前提なので、同一IP内の複数ノードは可視化側では
-  1台として扱われる点だけ注意（必要なら可視化側を port もキーにする）。
-
-CLI 例:
-    python multi_skipgraph_node.py -n 50 --base-port 8000 --bcast 10.205.123.255
-
-オプション:
-    -n / --num            生成ノード数 (default 10)
-    --base-port           最初のHTTPポート (default 8000)
-    --bcast               UDP送信先ブロードキャストアドレス (default BCAST_IP)
-    --dump                DUMP間隔秒。0で無効 (default 5)
-    --no-fallback         ローカルフォールバック無効
-    --no-udp              UDP受信・送信とも無効（フォールバックのみ）
-    --ignore-loopback     127.* を on_discover で無視
-    --quiet               ログ少なめ
+1プロセスで複数ノード(HTTP+UDP広告)を立ち上げる。
+UDPブロードキャストが自分に返ってこない／フィルタされる環境でも動くよう、
+ローカルフォールバック(Queue経由で直接 on_discover に流す)を搭載。
 """
 
 from __future__ import annotations
@@ -51,10 +36,8 @@ _LOCK = threading.Lock()
 STOP = threading.Event()
 _MY_IP: str | None = None
 
-# ローカルフォールバックバス（UDPが戻らない環境用）
 LOCAL_BUS: "queue.Queue[tuple[str,int,dict]]" = queue.Queue()
 
-# 実行時フラグ（CLIで切り替え）
 FLAGS = {
     "enable_udp": True,
     "enable_fallback": True,
@@ -75,7 +58,6 @@ def get_my_ip() -> str:
         return _MY_IP
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # 外部に接続せずともローカルNIC経由でIPが取れるトリック
         s.connect(("8.8.8.8", 80))
         _MY_IP = s.getsockname()[0]
     except Exception:
@@ -136,14 +118,23 @@ class SkipNode:
                         "key": node.key,
                         "mv": node.mv,
                         "neighbors": node.calc_neighbors(),
+                        "hop": 0
                     }).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
                     self.wfile.write(body)
+            def do_POST(self):
+                if self.path == "/shutdown":
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"BYE")
+                    # サーバースレッドをシャットダウン
+                    threading.Thread(target=node._httpd.shutdown, daemon=True).start()
             def log_message(self, *args, **kwargs):
                 return
         return Handler
+
 
     def start_http(self):
         self._httpd = HTTPServer(("", self.port), self._make_handler())
@@ -260,7 +251,7 @@ def main(num_nodes: int = 10, base_port: int = 8000):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-n", "--num", type=int, default=10000, help="number of nodes")
+    parser.add_argument("-n", "--num", type=int, default=10, help="number of nodes")
     parser.add_argument("--base-port", type=int, default=8000)
     parser.add_argument("--bcast", default=BCAST_IP, help="broadcast address")
     parser.add_argument("--dump", type=int, default=DUMP_INTERVAL_SEC, help="dump interval sec (0=off)")
