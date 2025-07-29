@@ -4,6 +4,7 @@ Multi SkipGraph Node launcher (Windows friendly)
 ------------------------------------------------
 * 1プロセスで複数ノード(HTTP+UDP広告)を立ち上げる。
 * /shutdown で任意ノードを個別停止可
+curl -X POST http://localhost:8002/shutdown　
 * HTTP の / で key・mv・port・neighbors を JSON 返す（← port を追加）
 """
 
