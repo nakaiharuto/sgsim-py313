@@ -2,21 +2,22 @@
 """
 Multi SkipGraph Node launcher (Windows friendly)
 ------------------------------------------------
-* 1プロセスで複数ノード(HTTP+UDP広告)を立ち上げる。
-* /shutdown で任意ノードを個別停止可
-curl -X POST http://localhost:8002/shutdown
-* HTTP の / で key・mv・port・neighbors を JSON 返す（← port を追加）
-Multi SkipGraph Node launcher（CLIからnでノード追加対応版）
+* 1プロセスで複数ノード(HTTP+UDP広告)を立ち上げる
+* /shutdown で任意ノードを個別停止可 (curl -X POST http://localhost:8002/shutdown)
+* HTTP / で key・mv・port・neighbors を JSON返す（portを追加）
+* CLIで n押下→key/mv/port対話式入力（Enterで自動割当、重複安全）/ lで現ノード一覧
+* Ctrl+Cで中断OK
 
-- 1プロセスで複数ノードを動的に生成・削除・追加
-- n押下→key/mv/portを対話式入力（Enterで自動割当、重複安全）
-- Ctrl+C（KeyboardInterrupt）で中断OK
-サーバー起動例
-python multi_skipgraph_node.py -n 5 --base-port 8000
+[NEW] 各レベルのneighbor探索で端（min/max key）同士も必ずneighborとして接続（リング状の連結）。  
+可視化や3D配置で**端と端がつながるSkipGraph**が観察可能！
+
+サーバー起動例:
+    python multi_skipgraph_node.py -n 5 --base-port 8000
 
 CLI例:
     python multi_skipgraph_node.py -n 5 --base-port 8000 --bcast 10.205.123.255
 """
+
 
 from __future__ import annotations
 import socket
@@ -107,17 +108,37 @@ class SkipNode:
         me = {"key": self.key, "mv": self.mv}
         with _LOCK:
             all_nodes = list(ALL_NODES.values()) + [me]
+        keys_sorted = sorted(n["key"] for n in all_nodes)
         neighbors = []
         for level in range(LEVELS):
             same = [n for n in all_nodes if common_prefix(self.mv, n["mv"]) >= level + 1 and n["key"] != self.key]
-            left  = max([n for n in same if n["key"] < self.key], default=None, key=lambda n: n["key"])
-            right = min([n for n in same if n["key"] > self.key], default=None, key=lambda n: n["key"])
+            if not same:
+                neighbors.append({
+                    "level": level,
+                    "LEFT": [],
+                    "RIGHT": []
+                })
+                continue
+
+            lefts = [n for n in same if n['key'] < self.key]
+            rights = [n for n in same if n['key'] > self.key]
+
+            # -- 差分ここから: 両端もneighborとして追加する --
+            left = max(lefts, key=lambda n: n['key']) if lefts else (
+                max(same, key=lambda n: n['key']) if same else None
+            )
+            right = min(rights, key=lambda n: n['key']) if rights else (
+                min(same, key=lambda n: n['key']) if same else None
+            )
+            # -- 差分ここまで --
+
             neighbors.append({
                 "level": level,
                 "LEFT":  [left["key"]]  if left  else [],
                 "RIGHT": [right["key"]] if right else []
             })
         return neighbors
+
 
     def _make_handler(self):
         node = self
