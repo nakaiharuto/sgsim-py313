@@ -145,7 +145,13 @@ class SkipNode:
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(b"BYE")
+                    # サーバースレッドをシャットダウン
                     threading.Thread(target=node._httpd.shutdown, daemon=True).start()
+                    # ↓ここでNODES_LIST/ALL_NODESから削除（自分のport/keyで除去）
+                    with _LOCK:
+                        NODES_LIST[:] = [n for n in NODES_LIST if n.port != node.port]
+                        ALL_NODES.pop((get_my_ip(), node.port), None)
+
             def log_message(self, *args, **kwargs):
                 return
         return Handler
@@ -254,7 +260,14 @@ def next_free_key(used_keys):
 def node_adder_cli(base_port):
     while not STOP.is_set():
         try:
-            cmd = input("新ノード追加[n] または Enterで待機: ").strip()
+            cmd = input("新ノード追加[n] / 現在ノード一覧[l] または Enterで待機: ").strip()
+            if cmd == "l":
+                with _LOCK:
+                    print("[現状ノード一覧]")
+                    for nn in NODES_LIST:
+                        print(f"  key={nn.key}, port={nn.port}")
+                print()
+                continue
             if cmd != "n":
                 continue
             print("\n[ノード追加] key を入力してください（Enterでランダム）: ", end="")
