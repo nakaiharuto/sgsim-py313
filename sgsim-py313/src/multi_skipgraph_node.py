@@ -8,8 +8,8 @@ Multi SkipGraph Node launcher (Windows friendly)
 * CLIで n押下→key/mv/port対話式入力（Enterで自動割当、重複安全）/ lで現ノード一覧
 * Ctrl+Cで中断OK
 
-[NEW] 各レベルのneighbor探索で端（min/max key）同士も必ずneighborとして接続（リング状の連結）。  
-可視化や3D配置で**端と端がつながるSkipGraph**が観察可能！
+[NEW] 各レベルのneighbor探索で端（min/max key）同士も必ずneighborとして接続（リング状の連結）。
+ノードの状態はnodes.jsonに常に保存し、どのノードのneighbor計算でも共通データを利用。
 
 サーバー起動例:
     python multi_skipgraph_node.py -n 5 --base-port 8000
@@ -17,7 +17,6 @@ Multi SkipGraph Node launcher (Windows friendly)
 CLI例:
     python multi_skipgraph_node.py -n 5 --base-port 8000 --bcast 10.205.123.255
 """
-
 
 from __future__ import annotations
 import socket
@@ -49,6 +48,21 @@ _MY_IP: str | None = None
 LOCAL_BUS: "queue.Queue[tuple[str,int,dict]]" = queue.Queue()
 NODES_LIST = []
 
+NODES_FILE = "nodes.json"  # <--- ここでノードリスト保存！
+
+def save_nodes_to_file():
+    with _LOCK:
+        nodes = [{"key": n.key, "mv": n.mv, "port": n.port} for n in NODES_LIST]
+    with open(NODES_FILE, "w", encoding="utf-8") as f:
+        json.dump(nodes, f, ensure_ascii=False, indent=2)
+
+def load_nodes_from_file():
+    try:
+        with open(NODES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
 FLAGS = {
     "enable_udp": True,
     "enable_fallback": True,
@@ -57,11 +71,9 @@ FLAGS = {
     "dump_interval": DUMP_INTERVAL_SEC,
 }
 
-
 def log(msg: str):
     if not FLAGS["quiet"]:
         print(msg)
-
 
 def get_my_ip() -> str:
     global _MY_IP
@@ -77,17 +89,13 @@ def get_my_ip() -> str:
         s.close()
     return _MY_IP
 
-
 def random_mv(length: int = MV_LEN, alpha: int = ALPHA) -> str:
     return "".join(str(random.randint(0, alpha - 1)) for _ in range(length))
-
 
 def common_prefix(a: str, b: str) -> int:
     return sum(x == y for x, y in zip(a, b))
 
-
 def on_discover(ip: str, port: int, info: dict):
-    """UDP/フォールバック共通の発見処理"""
     if FLAGS["ignore_loopback"] and ip.startswith("127."):
         return
     with _LOCK:
@@ -95,7 +103,6 @@ def on_discover(ip: str, port: int, info: dict):
         ALL_NODES[(ip, port)] = {"key": info["key"], "mv": info["mv"]}
     if first:
         log(f"[discovered] {ip}:{port} -> {info}")
-
 
 @dataclass
 class SkipNode:
@@ -105,9 +112,8 @@ class SkipNode:
     _httpd: HTTPServer = field(init=False, repr=False)
 
     def calc_neighbors(self):
-        me = {"key": self.key, "mv": self.mv}
-        with _LOCK:
-            all_nodes = list(ALL_NODES.values()) + [me]
+        me = {"key": self.key, "mv": self.mv, "port": self.port}
+        all_nodes = load_nodes_from_file() + [me]
         keys_sorted = sorted(n["key"] for n in all_nodes)
         neighbors = []
         for level in range(LEVELS):
@@ -123,22 +129,19 @@ class SkipNode:
             lefts = [n for n in same if n['key'] < self.key]
             rights = [n for n in same if n['key'] > self.key]
 
-            # -- 差分ここから: 両端もneighborとして追加する --
+            # ---- リングneighbor実装 ----
             left = max(lefts, key=lambda n: n['key']) if lefts else (
                 max(same, key=lambda n: n['key']) if same else None
             )
             right = min(rights, key=lambda n: n['key']) if rights else (
                 min(same, key=lambda n: n['key']) if same else None
             )
-            # -- 差分ここまで --
-
             neighbors.append({
                 "level": level,
                 "LEFT":  [left["key"]]  if left  else [],
                 "RIGHT": [right["key"]] if right else []
             })
         return neighbors
-
 
     def _make_handler(self):
         node = self
@@ -158,7 +161,6 @@ class SkipNode:
                     try:
                         self.wfile.write(body)
                     except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-                        # たまに発生する「クライアントが先に接続切った」系は握りつぶす
                         pass
 
             def do_POST(self):
@@ -166,12 +168,11 @@ class SkipNode:
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(b"BYE")
-                    # サーバースレッドをシャットダウン
                     threading.Thread(target=node._httpd.shutdown, daemon=True).start()
-                    # ↓ここでNODES_LIST/ALL_NODESから削除（自分のport/keyで除去）
                     with _LOCK:
                         NODES_LIST[:] = [n for n in NODES_LIST if n.port != node.port]
                         ALL_NODES.pop((get_my_ip(), node.port), None)
+                    save_nodes_to_file()
 
             def log_message(self, *args, **kwargs):
                 return
@@ -198,7 +199,7 @@ class SkipNode:
                 targets.append((get_my_ip(), UDP_PORT))
                 targets.append(("127.0.0.1", UDP_PORT))
             else:
-                sock = None  # type: ignore
+                sock = None
             while not STOP.is_set():
                 if FLAGS["enable_udp"]:
                     for t in targets:
@@ -210,7 +211,6 @@ class SkipNode:
                     LOCAL_BUS.put((get_my_ip(), self.port, info))
                 time.sleep(BCAST_INTERVAL_SEC)
         threading.Thread(target=broadcaster, daemon=True, name=f"BCAST-{self.port}").start()
-
 
 def start_udp_listener():
     if not FLAGS["enable_udp"]:
@@ -241,7 +241,6 @@ def start_udp_listener():
                 pass
     threading.Thread(target=listener, daemon=True, name="UDP-Listener").start()
 
-
 def start_local_bus_consumer():
     if not FLAGS["enable_fallback"]:
         return
@@ -254,7 +253,6 @@ def start_local_bus_consumer():
             on_discover(ip, port, info)
     threading.Thread(target=consumer, daemon=True, name="LOCALBUS").start()
 
-
 def periodic_dump():
     if FLAGS["dump_interval"] <= 0:
         return
@@ -263,7 +261,6 @@ def periodic_dump():
         with _LOCK:
             dump = {f"{ip}:{p}": v for (ip, p), v in ALL_NODES.items()}
         log(f"[DUMP] ALL_NODES({len(dump)}): {dump}")
-
 
 # ----- 新規ノード追加CLI -----
 def next_free_port(base, used_ports):
@@ -333,9 +330,9 @@ def node_adder_cli(base_port):
             n.start_broadcast()
             with _LOCK:
                 NODES_LIST.append(n)
+            save_nodes_to_file()
             print(f"[OK] 新ノード追加: key={key}, mv={mv}, port={port}\n")
 
-            # ---- 一覧表示 ----
             print("[現状ノード一覧]")
             with _LOCK:
                 for nn in NODES_LIST:
@@ -344,7 +341,6 @@ def node_adder_cli(base_port):
         except KeyboardInterrupt:
             print("\n[中断] ノード追加をキャンセルしました\n")
             continue
-
 
 def main(num_nodes: int = 10, base_port: int = 8000):
     my_ip = get_my_ip()
@@ -365,6 +361,7 @@ def main(num_nodes: int = 10, base_port: int = 8000):
             n.start_http()
             n.start_broadcast()
             NODES_LIST.append(n)
+    save_nodes_to_file()  # <--- 最初の状態も保存！
 
     try:
         while True:
@@ -372,7 +369,6 @@ def main(num_nodes: int = 10, base_port: int = 8000):
     except KeyboardInterrupt:
         STOP.set()
         log("bye")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
