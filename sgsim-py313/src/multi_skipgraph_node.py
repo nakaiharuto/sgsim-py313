@@ -449,7 +449,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 反映
-    global BCAST_IP
     BCAST_IP = args.bcast
     FLAGS["enable_udp"]      = not args.no_udp
     FLAGS["enable_fallback"] = not args.no_fallback
