@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Multi SkipGraph Node launcher (Windows friendly)
-------------------------------------------------
+Multi SkipGraph Node launcher (cross-host + Windows friendly)
+------------------------------------------------------------
 * 1プロセスで複数ノード(HTTP+UDP広告)を立ち上げる
-* /shutdown で任意ノードを個別停止可 (curl -X POST http://localhost:8002/shutdown)
-* HTTP / で key・mv・port・neighbors を JSON返す（portを追加）
+* /shutdown で任意ノードを個別停止可 (curl -X POST http://<host>:<port>/shutdown)
+* HTTP / で key・mv・port・neighbors を JSON返す
 * CLIで n押下→key/mv/port対話式入力（Enterで自動割当、重複安全）/ lで現ノード一覧
 * Ctrl+Cで中断OK
 
-[NEW] 各レベルのneighbor探索で端（min/max key）同士も必ずneighborとして接続（リング状の連結）。
-ノードの状態はnodes.jsonに常に保存し、どのノードのneighbor計算でも共通データを利用。
+[FIX]
+- 近傍計算(calc_neighbors)が他ホストのノードを参照しない不具合を修正
+  -> ALL_NODES(発見済み) + NODES_LIST(ローカル) + nodes.json(参考) をマージして重複排除
+- 発見(on_discover)時にオプションで nodes.json へも反映
+- ブロードキャストが落とされる環境向けに --peers でユニキャスト先を追加
+- ログ/挙動を --verbose, --quiet で制御
 
-サーバー起動例:
-    python multi_skipgraph_node.py -n 5 --base-port 8000
-
-CLI例:
-    python multi_skipgraph_node.py -n 5 --base-port 8000 --bcast 10.205.123.255
+起動例:
+  python multi_skipgraph_node_fixed.py -n 3 --base-port 8000 --bcast 10.205.127.255 --verbose
+  python multi_skipgraph_node_fixed.py -n 3 --base-port 8000 --peers 10.205.109.98,10.205.120.106 --no-udp --verbose
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ import queue
 import argparse
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 LEVELS   = 10
 ALPHA    = 2
@@ -46,22 +48,9 @@ STOP = threading.Event()
 _MY_IP: str | None = None
 
 LOCAL_BUS: "queue.Queue[tuple[str,int,dict]]" = queue.Queue()
-NODES_LIST = []
+NODES_LIST: List["SkipNode"] = []
 
-NODES_FILE = "nodes.json"  # <--- ここでノードリスト保存！
-
-def save_nodes_to_file():
-    with _LOCK:
-        nodes = [{"key": n.key, "mv": n.mv, "port": n.port} for n in NODES_LIST]
-    with open(NODES_FILE, "w", encoding="utf-8") as f:
-        json.dump(nodes, f, ensure_ascii=False, indent=2)
-
-def load_nodes_from_file():
-    try:
-        with open(NODES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+NODES_FILE = "nodes.json"  # 共有/参考用
 
 FLAGS = {
     "enable_udp": True,
@@ -69,11 +58,16 @@ FLAGS = {
     "ignore_loopback": False,
     "quiet": False,
     "dump_interval": DUMP_INTERVAL_SEC,
+    "persist_on_discover": True,  # 発見時にnodes.jsonへも保存
 }
+
+CLI_PEERS: List[str] = []  # ユニキャスト先(IPv4文字列)
+
 
 def log(msg: str):
     if not FLAGS["quiet"]:
         print(msg)
+
 
 def get_my_ip() -> str:
     global _MY_IP
@@ -89,20 +83,55 @@ def get_my_ip() -> str:
         s.close()
     return _MY_IP
 
+
 def random_mv(length: int = MV_LEN, alpha: int = ALPHA) -> str:
     return "".join(str(random.randint(0, alpha - 1)) for _ in range(length))
 
+
 def common_prefix(a: str, b: str) -> int:
     return sum(x == y for x, y in zip(a, b))
+
+
+def save_nodes_to_file():
+    """ローカルノードに加え、発見済みも含めて保存(重複排除)。"""
+    try:
+        with _LOCK:
+            locals_ = [{"key": n.key, "mv": n.mv, "port": n.port} for n in NODES_LIST]
+            discovered = [{"key": v["key"], "mv": v["mv"], "port": p}
+                          for (ip, p), v in ALL_NODES.items()]
+        seen = set()
+        merged = []
+        for n in locals_ + discovered:
+            kp = (n["key"], n["port"])
+            if kp in seen:
+                continue
+            seen.add(kp)
+            merged.append(n)
+        with open(NODES_FILE, "w", encoding="utf-8") as f:
+            json.dump(merged, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"[WARN] save_nodes_to_file failed: {e}")
+
+
+def load_nodes_from_file():
+    try:
+        with open(NODES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
 
 def on_discover(ip: str, port: int, info: dict):
     if FLAGS["ignore_loopback"] and ip.startswith("127."):
         return
     with _LOCK:
         first = (ip, port) not in ALL_NODES
-        ALL_NODES[(ip, port)] = {"key": info["key"], "mv": info["mv"]}
+        ALL_NODES[(ip, port)] = {"key": info.get("key"), "mv": info.get("mv")}
     if first:
-        log(f"[discovered] {ip}:{port} -> {info}")
+        log(f"[discovered] {ip}:{port} -> key={info.get('key')} mv={info.get('mv')}")
+        if FLAGS["persist_on_discover"]:
+            save_nodes_to_file()
+
 
 @dataclass
 class SkipNode:
@@ -113,29 +142,41 @@ class SkipNode:
 
     def calc_neighbors(self):
         me = {"key": self.key, "mv": self.mv, "port": self.port}
-        all_nodes = load_nodes_from_file() + [me]
-        keys_sorted = sorted(n["key"] for n in all_nodes)
+
+        with _LOCK:
+            discovered = [{"key": v["key"], "mv": v["mv"], "port": p}
+                          for (ip, p), v in ALL_NODES.items()]
+            locals_ = [{"key": n.key, "mv": n.mv, "port": n.port}
+                       for n in NODES_LIST]
+        file_nodes = load_nodes_from_file()
+
+        # 重複排除
+        seen = set()
+        all_nodes = []
+        for n in file_nodes + locals_ + discovered + [me]:
+            try:
+                kp = (int(n["key"]), int(n["port"]))
+            except Exception:
+                # 変なデータが混じってもスキップ
+                continue
+            if kp in seen:
+                continue
+            seen.add(kp)
+            all_nodes.append({"key": int(n["key"]), "mv": str(n["mv"]), "port": int(n["port"])})
+
         neighbors = []
         for level in range(LEVELS):
-            same = [n for n in all_nodes if common_prefix(self.mv, n["mv"]) >= level + 1 and n["key"] != self.key]
+            same = [n for n in all_nodes if n["key"] != self.key and common_prefix(self.mv, n["mv"]) >= level + 1]
             if not same:
-                neighbors.append({
-                    "level": level,
-                    "LEFT": [],
-                    "RIGHT": []
-                })
+                neighbors.append({"level": level, "LEFT": [], "RIGHT": []})
                 continue
 
-            lefts = [n for n in same if n['key'] < self.key]
+            lefts  = [n for n in same if n['key'] < self.key]
             rights = [n for n in same if n['key'] > self.key]
 
-            # ---- リングneighbor実装 ----
-            left = max(lefts, key=lambda n: n['key']) if lefts else (
-                max(same, key=lambda n: n['key']) if same else None
-            )
-            right = min(rights, key=lambda n: n['key']) if rights else (
-                min(same, key=lambda n: n['key']) if same else None
-            )
+            left = max(lefts,  key=lambda n: n['key']) if lefts else (max(same, key=lambda n: n['key']) if same else None)
+            right = min(rights, key=lambda n: n['key']) if rights else (min(same, key=lambda n: n['key']) if same else None)
+
             neighbors.append({
                 "level": level,
                 "LEFT":  [left["key"]]  if left  else [],
@@ -153,6 +194,7 @@ class SkipNode:
                         "mv": node.mv,
                         "neighbors": node.calc_neighbors(),
                         "port": node.port,
+                        "host": get_my_ip(),
                         "hop": 0
                     }).encode()
                     self.send_response(200)
@@ -167,11 +209,17 @@ class SkipNode:
                 if self.path == "/shutdown":
                     self.send_response(200)
                     self.end_headers()
-                    self.wfile.write(b"BYE")
+                    try:
+                        self.wfile.write(b"BYE")
+                    except Exception:
+                        pass
                     threading.Thread(target=node._httpd.shutdown, daemon=True).start()
                     with _LOCK:
-                        NODES_LIST[:] = [n for n in NODES_LIST if n.port != node.port]
-                        ALL_NODES.pop((get_my_ip(), node.port), None)
+                        try:
+                            NODES_LIST[:] = [n for n in NODES_LIST if n.port != node.port]
+                            ALL_NODES.pop((get_my_ip(), node.port), None)
+                        except Exception:
+                            pass
                     save_nodes_to_file()
 
             def log_message(self, *args, **kwargs):
@@ -179,6 +227,7 @@ class SkipNode:
         return Handler
 
     def start_http(self):
+        # 全IFで待受 (FWに注意)
         self._httpd = HTTPServer(("", self.port), self._make_handler())
         threading.Thread(target=self._httpd.serve_forever,
                          daemon=True,
@@ -186,31 +235,36 @@ class SkipNode:
         log(f"[HTTP] {get_my_ip()}:{self.port} (key={self.key})")
 
     def start_broadcast(self):
-        if not FLAGS["enable_udp"] and not FLAGS["enable_fallback"]:
+        if not FLAGS["enable_udp"] and not FLAGS["enable_fallback"] and not CLI_PEERS:
             return
+
         def broadcaster():
             info = {"key": self.key, "mv": self.mv, "port": self.port}
             msg  = json.dumps(info).encode()
-            targets = []
+
+            sock = None
             if FLAGS["enable_udp"]:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                targets.append((BCAST_IP, UDP_PORT))
-                targets.append((get_my_ip(), UDP_PORT))
-                targets.append(("127.0.0.1", UDP_PORT))
-            else:
-                sock = None
+
             while not STOP.is_set():
-                if FLAGS["enable_udp"]:
+                # UDPブロードキャスト/ユニキャスト
+                if FLAGS["enable_udp"] and sock:
+                    targets = [(BCAST_IP, UDP_PORT), (get_my_ip(), UDP_PORT), ("127.0.0.1", UDP_PORT)]
+                    for peer in CLI_PEERS:
+                        targets.append((peer, UDP_PORT))
                     for t in targets:
                         try:
                             sock.sendto(msg, t)
                         except Exception:
                             pass
+                # ローカルフォールバック
                 if FLAGS["enable_fallback"]:
                     LOCAL_BUS.put((get_my_ip(), self.port, info))
                 time.sleep(BCAST_INTERVAL_SEC)
+
         threading.Thread(target=broadcaster, daemon=True, name=f"BCAST-{self.port}").start()
+
 
 def start_udp_listener():
     if not FLAGS["enable_udp"]:
@@ -233,13 +287,14 @@ def start_udp_listener():
             except Exception:
                 continue
             try:
-                info = json.loads(data.decode())
+                info = json.loads(data.decode(errors="ignore"))
                 ip   = addr[0]
-                port = info.get("port", 8000)
+                port = int(info.get("port", 8000))
                 on_discover(ip, port, info)
             except Exception:
                 pass
     threading.Thread(target=listener, daemon=True, name="UDP-Listener").start()
+
 
 def start_local_bus_consumer():
     if not FLAGS["enable_fallback"]:
@@ -253,6 +308,7 @@ def start_local_bus_consumer():
             on_discover(ip, port, info)
     threading.Thread(target=consumer, daemon=True, name="LOCALBUS").start()
 
+
 def periodic_dump():
     if FLAGS["dump_interval"] <= 0:
         return
@@ -262,18 +318,22 @@ def periodic_dump():
             dump = {f"{ip}:{p}": v for (ip, p), v in ALL_NODES.items()}
         log(f"[DUMP] ALL_NODES({len(dump)}): {dump}")
 
+
 # ----- 新規ノード追加CLI -----
+
 def next_free_port(base, used_ports):
     p = base
     while p in used_ports:
         p += 1
     return p
 
+
 def next_free_key(used_keys):
     while True:
         k = random.randint(100, 999)
         if k not in used_keys:
             return k
+
 
 def node_adder_cli(base_port):
     while not STOP.is_set():
@@ -342,10 +402,11 @@ def node_adder_cli(base_port):
             print("\n[中断] ノード追加をキャンセルしました\n")
             continue
 
+
 def main(num_nodes: int = 10, base_port: int = 8000):
     my_ip = get_my_ip()
     log(f"Start {num_nodes} nodes on {my_ip}")
-    log(f"BCAST_IP={BCAST_IP}, UDP_PORT={UDP_PORT}")
+    log(f"BCAST_IP={BCAST_IP}, UDP_PORT={UDP_PORT}, peers={CLI_PEERS}")
 
     start_udp_listener()
     start_local_bus_consumer()
@@ -361,7 +422,7 @@ def main(num_nodes: int = 10, base_port: int = 8000):
             n.start_http()
             n.start_broadcast()
             NODES_LIST.append(n)
-    save_nodes_to_file()  # <--- 最初の状態も保存！
+    save_nodes_to_file()  # 初期状態も保存
 
     try:
         while True:
@@ -369,6 +430,7 @@ def main(num_nodes: int = 10, base_port: int = 8000):
     except KeyboardInterrupt:
         STOP.set()
         log("bye")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -381,14 +443,22 @@ if __name__ == "__main__":
     parser.add_argument("--ignore-loopback", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--verbose", action="store_true", help="ログを表示する")
+    parser.add_argument("--peers", type=str, default="", help="カンマ区切りのユニキャスト送信先IPv4(例: 10.205.109.98,10.205.120.106)")
+    parser.add_argument("--no-persist-discover", action="store_true", help="発見時にnodes.jsonへ保存しない")
 
     args = parser.parse_args()
 
+    # 反映
+    global BCAST_IP
     BCAST_IP = args.bcast
     FLAGS["enable_udp"]      = not args.no_udp
     FLAGS["enable_fallback"] = not args.no_fallback
     FLAGS["ignore_loopback"] = args.ignore_loopback
     FLAGS["quiet"]           = not args.verbose
     FLAGS["dump_interval"]   = args.dump
+    FLAGS["persist_on_discover"] = not args.no_persist_discover
+
+    if args.peers:
+        CLI_PEERS[:] = [p.strip() for p in args.peers.split(',') if p.strip()]
 
     main(num_nodes=args.num, base_port=args.base_port)
